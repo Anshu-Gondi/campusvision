@@ -1,0 +1,54 @@
+/* Global background for all pages */
+body {
+  background: linear-gradient(135deg, #0a3d0a, #145214, #1e701e);
+  color: #faffb8;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Navbar */
+.navbar.is-dark {
+  background: #0a3d0a;
+  border-bottom: 2px solid #00ff00;
+  box-shadow: 0 0 15px rgba(0, 255, 0, 0.6), 0 0 25px rgba(255, 255, 0, 0.3);
+}
+
+/* Navbar links */
+.navbar-item {
+  color: #faffb8 !important;
+  font-weight: bold;
+  transition: all 0.3s ease-in-out;
+}
+.navbar-item:hover {
+  color: #ffff33 !important;
+  text-shadow: 0 0 10px #ffff33, 0 0 20px #00ff00;
+}
+
+/* Container cards (shared across all pages) */
+.section .container {
+  background-color: rgba(20, 20, 20, 0.85);
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 0 25px rgba(0, 255, 0, 0.5), inset 0 0 40px rgba(255, 255, 0, 0.2);
+}
+
+/* Buttons (match Home.jsx glow.css) */
+.button.is-primary {
+  background-color: #ffff33;
+  color: #0a3d0a;
+  box-shadow: 0 0 15px #ffff33;
+}
+.button.is-link {
+  background-color: #145214;
+  color: #ffff33;
+  box-shadow: 0 0 15px #00ff00;
+}
+.button.is-success {
+  background-color: #00ff00;
+  color: #0a3d0a;
+  box-shadow: 0 0 15px #00ff00;
+}
+.button.is-warning {
+  background-color: #ffeb3b;
+  color: #0a3d0a;
+  box-shadow: 0 0 15px #ffff33;
+}
