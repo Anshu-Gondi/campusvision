@@ -4,6 +4,7 @@ import {
   createTeacher,
   updateTeacherImage,
   deleteTeacher,
+  deleteTeacherFull,   // 🆕 import full delete
 } from "../../services/api";
 
 export default function Teachers() {
@@ -57,9 +58,18 @@ export default function Teachers() {
     loadTeachers();
   };
 
-  const handleDelete = async (employeeId) => {
+  // 🟢 Old: delete only image
+  const handleDeleteImage = async (employeeId) => {
     await deleteTeacher(employeeId);
     loadTeachers();
+  };
+
+  // 🆕 New: full delete (teacher + attendance + image)
+  const handleDeleteFull = async (employeeId) => {
+    if (window.confirm("This will permanently delete teacher, image, and attendance records. Continue?")) {
+      await deleteTeacherFull(employeeId);
+      loadTeachers();
+    }
   };
 
   return (
@@ -136,10 +146,16 @@ export default function Teachers() {
                 </td>
                 <td>
                   <button
-                    className="button is-danger is-small"
-                    onClick={() => handleDelete(teacher.employee_id)}
+                    className="button is-warning is-small mr-2"
+                    onClick={() => handleDeleteImage(teacher.employee_id)}
                   >
-                    Delete
+                    Delete Image
+                  </button>
+                  <button
+                    className="button is-danger is-small"
+                    onClick={() => handleDeleteFull(teacher.employee_id)}
+                  >
+                    Full Delete
                   </button>
                 </td>
               </tr>

@@ -3,7 +3,9 @@ from . import views
 
 urlpatterns = [
     path("students/", views.list_students, name="list_students"),
+    path("delete/student/<str:roll_no>/", views.delete_student, name="delete_student"),
     path("teachers/", views.list_teachers, name="list_teachers"),
+    path("delete/teacher/<str:employee_id>/", views.delete_teacher, name="delete_teacher"),
     path("register/student/", views.register_student, name="register_student"),
     path("register/teacher/", views.register_teacher, name="register_teacher"),
     path("verify/", views.verify_identity, name="verify_identity"),

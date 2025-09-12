@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { QrReader } from "react-qr-reader";
 import { QRCodeCanvas } from "qrcode.react";
 import { createQrSession } from "../../services/api";
@@ -6,25 +6,47 @@ import { useNavigate } from "react-router-dom";
 
 export default function AttendanceScanner() {
   const [qrValue, setQrValue] = useState("");
+  const [prevQrValue, setPrevQrValue] = useState(""); // hold previous QR for grace overlap
   const [message, setMessage] = useState("");
   const navigate = useNavigate();
 
-  const generateQr = async () => {
-    const data = await createQrSession();
-    if (data.code) {
-      const reactFormUrl = `${window.location.origin}/attendance/form`;
-      setQrValue(`${import.meta.env.VITE_API_KEY}/qr/validate/${data.code}/?redirect=${encodeURIComponent(reactFormUrl)}`);
+  const generateQr = useCallback(async () => {
+    try {
+      const data = await createQrSession();
+      if (data.code) {
+        const reactFormUrl = `${window.location.origin}/attendance/form`;
+
+        // move current to previous before updating
+        setPrevQrValue(qrValue);
+        setQrValue(
+          `${import.meta.env.VITE_API_KEY}/qr/validate/${data.code}/?redirect=${encodeURIComponent(
+            reactFormUrl
+          )}`
+        );
+      }
+    } catch (err) {
+      console.error("QR session error:", err);
     }
-  };
+  }, [qrValue]);
 
   useEffect(() => {
-    generateQr();
-  }, []);
+    generateQr(); // run once
+
+    const interval = setInterval(() => {
+      generateQr();
+    }, 20000);
+
+    return () => clearInterval(interval);
+  }, [generateQr]);
+
 
   const handleQrScan = (result) => {
     if (result?.text) {
-      // Normally Django redirects, but you can also handle local scan for testing
       const code = result.text.trim();
+
+      // ignore scanning the same QR as previous (grace)
+      if (code === qrValue || code === prevQrValue) return;
+
       setMessage(`Scanned QR: ${code}`);
       navigate("/attendance/form?code=" + encodeURIComponent(code));
     }
@@ -32,7 +54,7 @@ export default function AttendanceScanner() {
 
   return (
     <div className="container has-text-centered">
-      <h1 className="title has-text-primary">Scan QR Code</h1>
+      <h1 className="title has-text-white">Scan QR Code For Attendance Marking Progress Starting</h1>
 
       {qrValue && (
         <div>

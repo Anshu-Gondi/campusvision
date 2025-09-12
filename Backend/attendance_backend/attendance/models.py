@@ -56,14 +56,16 @@ class QRSession(models.Model):
     code = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True)
+    grace_seconds = 5  # allow overlap scanning
 
     def save(self, *args, **kwargs):
         if not self.expires_at:
-            self.expires_at = now() + timedelta(minutes=5)
+            self.expires_at = now() + timedelta(seconds=20)
         super().save(*args, **kwargs)
 
     def is_valid(self):
-        return now() < self.expires_at
+        # valid if current time is before expires_at + grace_seconds
+        return now() < (self.expires_at + timedelta(seconds=self.grace_seconds))
 
     def __str__(self):
         return f"{self.code} valid till {self.expires_at}"

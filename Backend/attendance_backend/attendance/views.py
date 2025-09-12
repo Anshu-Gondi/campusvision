@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.timezone import now
+from deepface import DeepFace
 from .models import Student, Teacher, Attendance, QRSession
 from .serializers import StudentSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer
 
@@ -34,8 +35,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 @api_view(["GET"])
 def list_students(request):
     students = Student.objects.all()
-    serializer = StudentSerializer(students, many=True, context={"request": request})
+    serializer = StudentSerializer(
+        students, many=True, context={"request": request})
     return Response(serializer.data)
+
 
 @api_view(["POST"])
 def register_student(request):
@@ -46,16 +49,21 @@ def register_student(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ----------------- Upload / Update Student Image -----------------
+
+
 @api_view(["POST"])
 def upload_student_image(request, student_id):
     student = get_object_or_404(Student, id=student_id)
-    serializer = StudentSerializer(student, data=request.data, partial=True)  # allow partial update
+    serializer = StudentSerializer(
+        student, data=request.data, partial=True)  # allow partial update
     if serializer.is_valid():
         serializer.save()
         return Response({"message": f"Image updated for student {student.name}"}, status=status.HTTP_200_OK)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ----------------- Delete Student Image -----------------
+
+
 @api_view(["DELETE"])
 def delete_student_image(request, roll_no):
     try:
@@ -69,12 +77,37 @@ def delete_student_image(request, roll_no):
     except Student.DoesNotExist:
         return Response({"error": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
 
+# ----------------- Delete Student Record (with attendance + image cleanup) -----------------
+
+
+@api_view(["DELETE"])
+def delete_student(request, roll_no):
+    try:
+        student = Student.objects.get(roll_no=roll_no)
+
+        # Delete related attendance records
+        Attendance.objects.filter(student=student).delete()
+
+        # Delete image file if exists
+        if student.image:
+            student.image.delete(save=False)
+
+        student.delete()
+        return Response({"message": f"Student {roll_no} and related attendance deleted successfully"}, status=status.HTTP_200_OK)
+
+    except Student.DoesNotExist:
+        return Response({"error": "Student not found"}, status=status.HTTP_404_NOT_FOUND)
+
 # ----------------- Teacher APIs -----------------
+
+
 @api_view(["GET"])
 def list_teachers(request):
     teachers = Teacher.objects.all()
-    serializer = TeacherSerializer(teachers, many=True, context={"request": request})
+    serializer = TeacherSerializer(
+        teachers, many=True, context={"request": request})
     return Response(serializer.data)
+
 
 @api_view(["POST"])
 def register_teacher(request):
@@ -85,6 +118,8 @@ def register_teacher(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ----------------- Upload / Update Teacher Image -----------------
+
+
 @api_view(["POST"])
 def upload_teacher_image(request, teacher_id):
     teacher = get_object_or_404(Teacher, id=teacher_id)
@@ -95,6 +130,8 @@ def upload_teacher_image(request, teacher_id):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ----------------- Delete Teacher Image -----------------
+
+
 @api_view(["DELETE"])
 def delete_teacher_image(request, employee_id):
     try:
@@ -108,11 +145,36 @@ def delete_teacher_image(request, employee_id):
     except Teacher.DoesNotExist:
         return Response({"error": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
 
+# ----------------- Delete Teacher Record (with attendance + image cleanup) -----------------
+
+
+@api_view(["DELETE"])
+def delete_teacher(request, employee_id):
+    try:
+        teacher = Teacher.objects.get(employee_id=employee_id)
+
+        # Delete related attendance records
+        Attendance.objects.filter(teacher=teacher).delete()
+
+        # Delete image file if exists
+        if teacher.image:
+            teacher.image.delete(save=False)
+
+        teacher.delete()
+        return Response({"message": f"Teacher {employee_id} and related attendance deleted successfully"}, status=status.HTTP_200_OK)
+
+    except Teacher.DoesNotExist:
+        return Response({"error": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
 # ----------------- Face Verification -----------------
+# ----------------- Face Verification (DeepFace, no TensorFlow) -----------------
+
+
 @api_view(["POST"])
 def verify_identity(request):
     """
-    Verify face of student or teacher, mark attendance, and close QR session.
+    Verify face of student or teacher using DeepFace (no TensorFlow), mark attendance, and close QR session.
     """
     user_type = request.data.get("type")
     user_id = request.data.get("id")
@@ -137,11 +199,8 @@ def verify_identity(request):
     file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
     frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
+    # Convert BGR to RGB for DeepFace
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    face_encodings = face_recognition.face_encodings(rgb_frame)
-
-    if not face_encodings:
-        return Response({"error": "No face detected"}, status=400)
 
     # Pick correct user
     if user_type == "student":
@@ -154,21 +213,27 @@ def verify_identity(request):
     if not person.image:
         return Response({"error": "No image registered"}, status=400)
 
-    ref_img = face_recognition.load_image_file(person.image.path)
-    ref_encoding = face_recognition.face_encodings(ref_img)
+    # Use DeepFace for face verification (opencv backend)
+    try:
+        result = DeepFace.verify(
+            img1_path=frame,               # uploaded image (numpy array)
+            img2_path=person.image.path,   # reference image path
+            model_name="Facenet",          # lightweight model
+            enforce_detection=True,
+            detector_backend="opencv"      # no TF required
+        )
+    except Exception as e:
+        return Response({"error": f"Face verification failed: {str(e)}"}, status=400)
 
-    if not ref_encoding:
-        return Response({"error": "Reference image not valid"}, status=400)
-
-    match = any(face_recognition.compare_faces([ref_encoding[0]], enc)[0] for enc in face_encodings)
-
-    if match:
+    if result.get("verified", False):
         if user_type == "student":
-            Attendance.objects.create(student=person, status="Present", date=now().date())
+            Attendance.objects.create(
+                student=person, status="Present", date=now().date())
         elif user_type == "teacher":
-            Attendance.objects.create(teacher=person, status="Present", date=now().date())
+            Attendance.objects.create(
+                teacher=person, status="Present", date=now().date())
 
-        # End the QR session (expire now)
+        # End the QR session
         session.expires_at = now()
         session.save()
 
@@ -180,6 +245,8 @@ def verify_identity(request):
         return Response({"error": "Face does not match"}, status=404)
 
 # ----------------- QR CODE SESSION -----------------
+
+
 @api_view(["POST"])
 def create_qr_session(request):
     """
@@ -212,12 +279,14 @@ def validate_qr_session(request, code):
 
         # Otherwise return JSON
         return Response({"valid": True, "code": str(session.code)})
-    
+
     except QRSession.DoesNotExist:
         return Response({"valid": False, "error": "Not found"}, status=404)
 
 # ----------------- Analytics -----------------
 # ----------------- Student Analytics -----------------
+
+
 @api_view(["GET"])
 def student_analytics(request):
     students = Student.objects.annotate(
@@ -234,7 +303,8 @@ def student_analytics(request):
         for s in students
     ]
 
-    most_absent_student = min(student_data, key=lambda x: x["attendance_percent"], default=None)
+    most_absent_student = min(
+        student_data, key=lambda x: x["attendance_percent"], default=None)
 
     return Response({
         "attendance_data": student_data,
@@ -259,7 +329,8 @@ def teacher_analytics(request):
         for t in teachers
     ]
 
-    most_absent_teacher = min(teacher_data, key=lambda x: x["attendance_percent"], default=None)
+    most_absent_teacher = min(
+        teacher_data, key=lambda x: x["attendance_percent"], default=None)
 
     return Response({
         "attendance_data": teacher_data,
@@ -272,7 +343,8 @@ def teacher_analytics(request):
 def student_detail_analytics(request, student_id):
     student = get_object_or_404(Student, id=student_id)
     total = Attendance.objects.filter(student=student).count()
-    present = Attendance.objects.filter(student=student, status="Present").count()
+    present = Attendance.objects.filter(
+        student=student, status="Present").count()
     percent = (present / total * 100) if total > 0 else 0
 
     return Response({
@@ -290,7 +362,8 @@ def student_detail_analytics(request, student_id):
 def teacher_detail_analytics(request, teacher_id):
     teacher = get_object_or_404(Teacher, id=teacher_id)
     total = Attendance.objects.filter(teacher=teacher).count()
-    present = Attendance.objects.filter(teacher=teacher, status="Present").count()
+    present = Attendance.objects.filter(
+        teacher=teacher, status="Present").count()
     percent = (present / total * 100) if total > 0 else 0
 
     return Response({

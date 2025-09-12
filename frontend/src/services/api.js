@@ -22,8 +22,17 @@ export const updateStudentImage = async (studentId, formData) => {
   return res.json();
 };
 
+// 🟢 Old (image-only delete)
 export const deleteStudent = async (rollNo) => {
   const res = await fetch(`${API_BASE}/delete/student/image/${rollNo}/`, {
+    method: "DELETE",
+  });
+  return res.json();
+};
+
+// 🆕 New (full delete: student + attendance + image)
+export const deleteStudentFull = async (rollNo) => {
+  const res = await fetch(`${API_BASE}/delete/student/${rollNo}/`, {
     method: "DELETE",
   });
   return res.json();
@@ -51,8 +60,17 @@ export const updateTeacherImage = async (teacherId, formData) => {
   return res.json();
 };
 
+// 🟢 Old (image-only delete)
 export const deleteTeacher = async (employeeId) => {
   const res = await fetch(`${API_BASE}/delete/teacher/image/${employeeId}/`, {
+    method: "DELETE",
+  });
+  return res.json();
+};
+
+// 🆕 New (full delete: teacher + attendance + image)
+export const deleteTeacherFull = async (employeeId) => {
+  const res = await fetch(`${API_BASE}/delete/teacher/${employeeId}/`, {
     method: "DELETE",
   });
   return res.json();

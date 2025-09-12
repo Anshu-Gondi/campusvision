@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { fetchStudents, createStudent, updateStudentImage, deleteStudent } from "../../services/api";
+import { 
+  fetchStudents, 
+  createStudent, 
+  updateStudentImage, 
+  deleteStudent, 
+  deleteStudentFull   // 🆕 new import
+} from "../../services/api";
 
 export default function Students() {
   const [students, setStudents] = useState([]);
@@ -38,9 +44,18 @@ export default function Students() {
     loadStudents();
   };
 
-  const handleDelete = async (rollNo) => {
+  // 🟢 Old: delete only image
+  const handleDeleteImage = async (rollNo) => {
     await deleteStudent(rollNo);
     loadStudents();
+  };
+
+  // 🆕 New: full delete (student + attendance + image)
+  const handleDeleteFull = async (rollNo) => {
+    if (window.confirm("This will permanently delete student, image, and attendance records. Continue?")) {
+      await deleteStudentFull(rollNo);
+      loadStudents();
+    }
   };
 
   return (
@@ -96,7 +111,18 @@ export default function Students() {
                   <input type="file" onChange={(e) => handleImageUpdate(student.id, e.target.files[0])} className="mt-1" />
                 </td>
                 <td>
-                  <button className="button is-danger is-small" onClick={() => handleDelete(student.roll_no)}>Delete</button>
+                  <button 
+                    className="button is-warning is-small mr-2" 
+                    onClick={() => handleDeleteImage(student.roll_no)}
+                  >
+                    Delete Image
+                  </button>
+                  <button 
+                    className="button is-danger is-small" 
+                    onClick={() => handleDeleteFull(student.roll_no)}
+                  >
+                    Full Delete
+                  </button>
                 </td>
               </tr>
             ))}
