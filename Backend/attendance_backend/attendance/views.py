@@ -1,3 +1,7 @@
+from .models import QRSession, Attendance, Student, StudentTimeTable, Teacher, TeacherTimeTable
+from rest_framework.decorators import api_view, permission_classes
+from django.shortcuts import get_object_or_404
+from concurrent.futures import ThreadPoolExecutor
 import os
 import cv2
 import numpy as np
@@ -5,13 +9,15 @@ import face_recognition
 from django.shortcuts import get_object_or_404, redirect
 from django.db.models import Count, Q
 from rest_framework.decorators import api_view
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import permission_classes
 from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.timezone import now
 from deepface import DeepFace
 from .models import Student, Teacher, Attendance, QRSession
-from .serializers import StudentSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer
+from .serializers import StudentSerializer, StudentTimeTableSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer, TeacherTimeTableSerializer
 
 # ----------------- CRUD ViewSets -----------------
 
@@ -29,6 +35,23 @@ class TeacherViewSet(viewsets.ModelViewSet):
 class AttendanceViewSet(viewsets.ModelViewSet):
     queryset = Attendance.objects.all()
     serializer_class = AttendanceSerializer
+
+
+# ----------------- Timetable APIs -----------------
+@api_view(["GET"])
+def student_timetable(request, class_name, section):
+    timetable = StudentTimeTable.objects.filter(
+        class_name=class_name, section=section)
+    serializer = StudentTimeTableSerializer(timetable, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["GET"])
+def teacher_timetable(request, teacher_id):
+    timetable = TeacherTimeTable.objects.filter(
+        teacher__employee_id=teacher_id)
+    serializer = TeacherTimeTableSerializer(timetable, many=True)
+    return Response(serializer.data)
 
 
 # ----------------- Student APIs -----------------
@@ -174,35 +197,44 @@ def delete_teacher(request, employee_id):
 @api_view(["POST"])
 def verify_identity(request):
     """
-    Verify face of student or teacher using DeepFace (no TensorFlow), mark attendance, and close QR session.
+    Verify face + detect emotion for liveness.
+    Secure QR: expiry + single-use + binding.
     """
     user_type = request.data.get("type")
     user_id = request.data.get("id")
-    qr_code = request.data.get("qr_code")  # session code
+    qr_code = request.data.get("qr_code")
 
     if not qr_code:
         return Response({"error": "QR code required"}, status=400)
 
-    # Validate QR session
+    # ---------------- Validate QR Session ----------------
     try:
         session = QRSession.objects.get(code=qr_code)
+
         if not session.is_valid():
-            return Response({"error": "QR session expired"}, status=400)
+            return Response({"error": "QR session expired or already used"}, status=400)
+
+        if session.used:
+            return Response({"error": "QR session already used"}, status=400)
+
     except QRSession.DoesNotExist:
         return Response({"error": "QR session not found"}, status=404)
 
     if "image" not in request.FILES:
         return Response({"error": "No image file provided"}, status=400)
 
-    # Read uploaded image
+    # ---------------- Read Image ----------------
     file = request.FILES["image"]
     file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
     frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-    # Convert BGR to RGB for DeepFace
+    if frame is None:
+        return Response({"error": "Invalid image file"}, status=400)
+
+    # Convert BGR → RGB (DeepFace usually expects RGB)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # Pick correct user
+    # ---------------- Fetch Person ----------------
     if user_type == "student":
         person = get_object_or_404(Student, roll_no=user_id)
     elif user_type == "teacher":
@@ -213,36 +245,74 @@ def verify_identity(request):
     if not person.image:
         return Response({"error": "No image registered"}, status=400)
 
-    # Use DeepFace for face verification (opencv backend)
-    try:
-        result = DeepFace.verify(
-            img1_path=frame,               # uploaded image (numpy array)
-            img2_path=person.image.path,   # reference image path
-            model_name="Facenet",          # lightweight model
+    # ---------------- Parallel Verification ----------------
+    def face_match():
+        return DeepFace.verify(
+            img1_path=rgb_frame,
+            img2_path=person.image.path,
+            model_name="Facenet",
             enforce_detection=True,
-            detector_backend="opencv"      # no TF required
+            detector_backend="opencv"
         )
-    except Exception as e:
-        return Response({"error": f"Face verification failed: {str(e)}"}, status=400)
 
-    if result.get("verified", False):
-        if user_type == "student":
-            Attendance.objects.create(
-                student=person, status="Present", date=now().date())
-        elif user_type == "teacher":
-            Attendance.objects.create(
-                teacher=person, status="Present", date=now().date())
+    def emotion_check():
+        return DeepFace.analyze(
+            img_path=rgb_frame,
+            actions=["emotion"],
+            detector_backend="opencv",
+            enforce_detection=True
+        )
 
-        # End the QR session
-        session.expires_at = now()
-        session.save()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        face_future = executor.submit(face_match)
+        emotion_future = executor.submit(emotion_check)
 
-        return Response({
-            "message": f"{user_type.capitalize()} {person.name} verified successfully",
-            "session_status": "ended"
-        }, status=200)
-    else:
+        try:
+            face_result = face_future.result(timeout=5)
+            emotion_result = emotion_future.result(timeout=5)
+        except Exception as e:
+            return Response({"error": f"Analysis failed: {str(e)}"}, status=500)
+
+    # ---------------- Check Results ----------------
+    if not face_result.get("verified", False):
         return Response({"error": "Face does not match"}, status=404)
+
+    # Handle DeepFace emotion result safely (dict vs list)
+    if isinstance(emotion_result, list):
+        emotion = emotion_result[0].get("dominant_emotion", "unknown")
+    else:
+        emotion = emotion_result.get("dominant_emotion", "unknown")
+
+    # Basic liveness → reject blank/unknown
+    if emotion.lower() in ["unknown", "blank"]:
+        return Response({"error": "Liveness failed: suspicious image"}, status=403)
+
+    # ---------------- Mark Attendance ----------------
+    if user_type == "student":
+        Attendance.objects.get_or_create(
+            student=person,
+            date=now().date(),
+            defaults={"status": "Present"}
+        )
+    elif user_type == "teacher":
+        Attendance.objects.get_or_create(
+            teacher=person,
+            date=now().date(),
+            defaults={"status": "Present"}
+        )
+
+    # End QR session (single-use)
+    session.used = True
+    session.scanned_by = user_id
+    session.expires_at = now()
+    session.save()
+
+    return Response({
+        "message": f"{user_type.capitalize()} {person.name} verified with liveness ✅",
+        "emotion": emotion,
+        "session_status": "ended"
+    }, status=200)
+
 
 # ----------------- QR CODE SESSION -----------------
 
@@ -264,24 +334,52 @@ def validate_qr_session(request, code):
     """
     try:
         session = QRSession.objects.get(code=code)
+
         if not session.is_valid():
-            return Response({"valid": False, "error": "Expired"}, status=400)
+            return Response({"valid": False, "error": "Expired or already used"}, status=400)
 
-        # Optional: mark as validated
-        # session.validated = True
-        # session.save()
+        # Mark as used immediately
+        session.used = True
+        # optional (student roll_no/teacher_id)
+        session.scanned_by = request.GET.get("user")
+        session.save()
 
-        # Get redirect URL from query param
+        # Handle redirect (React frontend)
         redirect_url = request.GET.get("redirect")
         if redirect_url:
-            # Redirect browser to React frontend page
             return redirect(f"{redirect_url}?code={code}")
 
-        # Otherwise return JSON
         return Response({"valid": True, "code": str(session.code)})
 
     except QRSession.DoesNotExist:
         return Response({"valid": False, "error": "Not found"}, status=404)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def checkin_attendance(request):
+    session_id = request.data.get("sessionId")
+    student_id = request.user.username   # assuming username = roll_no
+
+    try:
+        session = QRSession.objects.get(code=session_id)
+        if not session.is_valid():
+            return Response({"error": "QR expired or already used"}, status=400)
+
+        # Prevent reuse
+        session.used = True
+        session.scanned_by = student_id
+        session.save()
+
+        # Mark attendance
+        student = get_object_or_404(Student, roll_no=student_id)
+        Attendance.objects.create(
+            student=student, status="Present", date=now().date())
+
+        return Response({"message": "Attendance marked successfully"})
+    except QRSession.DoesNotExist:
+        return Response({"error": "Invalid session"}, status=404)
+
 
 # ----------------- Analytics -----------------
 # ----------------- Student Analytics -----------------

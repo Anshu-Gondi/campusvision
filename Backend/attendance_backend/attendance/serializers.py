@@ -1,7 +1,9 @@
 from rest_framework import serializers
-from .models import Student, Teacher, Attendance, QRSession
+from .models import Student, StudentTimeTable, Teacher, Attendance, QRSession, TeacherTimeTable
 
 # ----------------- Student Serializer -----------------
+
+
 class StudentSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()  # full URL for frontend
 
@@ -51,7 +53,26 @@ class AttendanceSerializer(serializers.ModelSerializer):
         model = Attendance
         fields = "__all__"
 
+# ----------------- Student Timetable Serializer -----------------
+
+
+class StudentTimeTableSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentTimeTable
+        fields = "__all__"
+
+
+# ----------------- Teacher Timetable Serializer -----------------
+class TeacherTimeTableSerializer(serializers.ModelSerializer):
+    teacher_name = serializers.CharField(source="teacher.name", read_only=True)
+
+    class Meta:
+        model = TeacherTimeTable
+        fields = "__all__"
+
 # ----------------- QR Code Serializer -----------------
+
+
 class QRSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = QRSession
