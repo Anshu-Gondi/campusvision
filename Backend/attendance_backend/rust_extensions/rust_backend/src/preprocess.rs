@@ -6,7 +6,6 @@ use opencv::{
     imgproc,
     objdetect::FaceDetectorYN,
     prelude::*,
-    types,
 };
 use tch::Tensor;
 
