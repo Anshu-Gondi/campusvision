@@ -13,25 +13,62 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import dj_database_url
 from decouple import config
+import os
+
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
-
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config("SECRET_KEY")
+
+# =================== RUST DLL PATH FIX (Windows) ===================
+import os
+import sys
+
+# 1. Add Rust wheel location (where .pyd is installed)
+VENV_SITE_PACKAGES = BASE_DIR.parent / "venv" / "lib" / "site-packages"
+os.add_dll_directory(str(VENV_SITE_PACKAGES))
+
+# ======== MANUAL DLL PATH FIX FOR RUST EXTENSION ========
+
+# Libtorch CPU DLLs
+LIBTORCH_PATH = r"C:\tools\libtorch\lib"
+if os.path.isdir(LIBTORCH_PATH):
+    os.add_dll_directory(LIBTORCH_PATH)
+else:
+    print("⚠️ Libtorch DLL directory not found")
+
+# OpenCV DLLs
+OPENCV_PATH = r"C:\tools\opencv\build\x64\vc16\bin"
+if os.path.isdir(OPENCV_PATH):
+    os.add_dll_directory(OPENCV_PATH)
+else:
+    print("⚠️ OpenCV DLL directory not found")
+
+# ONNX Runtime (Rust builds this in target/)
+ORT_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "rust_extensions",
+    "rust_backend",
+    "target",
+    "release"
+)
+if os.path.isdir(ORT_PATH):
+    os.add_dll_directory(os.path.abspath(ORT_PATH))
+else:
+    print("⚠️ ORT DLL dir not found yet (will exist after Rust build)")
+
+# =========================================================
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", default=False, cast=bool)
 
 ALLOWED_HOSTS = ["*"]
 
-
 # Application definition
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -55,7 +92,6 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-
 # Allow frontend (React/Tailwind app) to call APIs
 CORS_ALLOW_ALL_ORIGINS = True
 
@@ -78,18 +114,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'attendance_backend.wsgi.application'
 
-
 # Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-
 DATABASES = {
     "default": dj_database_url.parse(config("DATABASE_URL"), conn_max_age=600)
 }
 
-
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
-
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -105,28 +135,30 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
 # Internationalization
-# https://docs.djangoproject.com/en/5.2/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
-
 TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
-
+# Static & Media
 STATIC_URL = 'static/'
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-
 # Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ====================== RUST FACE DATABASE ======================
+# Path where HNSW + metadata will be saved
+FACE_DATABASE_PATH = BASE_DIR / "face_database"
+FACE_DATABASE_PATH.mkdir(exist_ok=True)  # Create if not exists
+
+# Load Rust backend on Django startup
+try:
+    from rust_backend import load_database
+    load_database(str(FACE_DATABASE_PATH))
+    print(f"Rust face database loaded from: {FACE_DATABASE_PATH}")
+except Exception as e:
+    print(f"Warning: Rust backend not loaded (first run?): {e}")
+# ===============================================================

@@ -1,3 +1,5 @@
+from django.http import StreamingHttpResponse
+from django.conf import settings
 from .models import QRSession, Attendance, Student, StudentTimeTable, Teacher, TeacherTimeTable
 from rest_framework.decorators import api_view, permission_classes
 from django.shortcuts import get_object_or_404
@@ -15,9 +17,12 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.timezone import now
-from deepface import DeepFace
 from .models import Student, Teacher, Attendance, QRSession
 from .serializers import StudentSerializer, StudentTimeTableSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer, TeacherTimeTableSerializer
+from rust_backend import (
+    detect_and_embed, add_person, search_person,
+    get_face_info, save_database, total_registered
+)
 
 # ----------------- CRUD ViewSets -----------------
 
@@ -190,130 +195,6 @@ def delete_teacher(request, employee_id):
         return Response({"error": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
-# ----------------- Face Verification -----------------
-# ----------------- Face Verification (DeepFace, no TensorFlow) -----------------
-
-
-@api_view(["POST"])
-def verify_identity(request):
-    """
-    Verify face + detect emotion for liveness.
-    Secure QR: expiry + single-use + binding.
-    """
-    user_type = request.data.get("type")
-    user_id = request.data.get("id")
-    qr_code = request.data.get("qr_code")
-
-    if not qr_code:
-        return Response({"error": "QR code required"}, status=400)
-
-    # ---------------- Validate QR Session ----------------
-    try:
-        session = QRSession.objects.get(code=qr_code)
-
-        if not session.is_valid():
-            return Response({"error": "QR session expired or already used"}, status=400)
-
-        if session.used:
-            return Response({"error": "QR session already used"}, status=400)
-
-    except QRSession.DoesNotExist:
-        return Response({"error": "QR session not found"}, status=404)
-
-    if "image" not in request.FILES:
-        return Response({"error": "No image file provided"}, status=400)
-
-    # ---------------- Read Image ----------------
-    file = request.FILES["image"]
-    file_bytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
-    frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-    if frame is None:
-        return Response({"error": "Invalid image file"}, status=400)
-
-    # Convert BGR → RGB (DeepFace usually expects RGB)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # ---------------- Fetch Person ----------------
-    if user_type == "student":
-        person = get_object_or_404(Student, roll_no=user_id)
-    elif user_type == "teacher":
-        person = get_object_or_404(Teacher, employee_id=user_id)
-    else:
-        return Response({"error": "Invalid type"}, status=400)
-
-    if not person.image:
-        return Response({"error": "No image registered"}, status=400)
-
-    # ---------------- Parallel Verification ----------------
-    def face_match():
-        return DeepFace.verify(
-            img1_path=rgb_frame,
-            img2_path=person.image.path,
-            model_name="Facenet",
-            enforce_detection=True,
-            detector_backend="opencv"
-        )
-
-    def emotion_check():
-        return DeepFace.analyze(
-            img_path=rgb_frame,
-            actions=["emotion"],
-            detector_backend="opencv",
-            enforce_detection=True
-        )
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        face_future = executor.submit(face_match)
-        emotion_future = executor.submit(emotion_check)
-
-        try:
-            face_result = face_future.result(timeout=5)
-            emotion_result = emotion_future.result(timeout=5)
-        except Exception as e:
-            return Response({"error": f"Analysis failed: {str(e)}"}, status=500)
-
-    # ---------------- Check Results ----------------
-    if not face_result.get("verified", False):
-        return Response({"error": "Face does not match"}, status=404)
-
-    # Handle DeepFace emotion result safely (dict vs list)
-    if isinstance(emotion_result, list):
-        emotion = emotion_result[0].get("dominant_emotion", "unknown")
-    else:
-        emotion = emotion_result.get("dominant_emotion", "unknown")
-
-    # Basic liveness → reject blank/unknown
-    if emotion.lower() in ["unknown", "blank"]:
-        return Response({"error": "Liveness failed: suspicious image"}, status=403)
-
-    # ---------------- Mark Attendance ----------------
-    if user_type == "student":
-        Attendance.objects.get_or_create(
-            student=person,
-            date=now().date(),
-            defaults={"status": "Present"}
-        )
-    elif user_type == "teacher":
-        Attendance.objects.get_or_create(
-            teacher=person,
-            date=now().date(),
-            defaults={"status": "Present"}
-        )
-
-    # End QR session (single-use)
-    session.used = True
-    session.scanned_by = user_id
-    session.expires_at = now()
-    session.save()
-
-    return Response({
-        "message": f"{user_type.capitalize()} {person.name} verified with liveness ✅",
-        "emotion": emotion,
-        "session_status": "ended"
-    }, status=200)
-
-
 # ----------------- QR CODE SESSION -----------------
 
 
@@ -472,3 +353,124 @@ def teacher_detail_analytics(request, teacher_id):
         "present_count": present,
         "absent_count": total - present,
     })
+
+
+@api_view(["POST"])
+def register_face_rust(request):
+    """Register student/teacher using Rust HNSW"""
+    user_type = request.data.get("type")  # "student" or "teacher"
+    user_id = request.data.get("id")      # roll_no or employee_id
+    name = request.data.get("name")
+
+    if user_type not in ["student", "teacher"]:
+        return Response({"error": "type must be student/teacher"}, status=400)
+
+    if "image" not in request.FILES:
+        return Response({"error": "Image required"}, status=400)
+
+    file = request.FILES["image"]
+    img_bytes = file.read()
+
+    result = detect_and_embed(img_bytes)
+    if not result["found"]:
+        return Response({"error": "No face detected"}, status=400)
+
+    embedding = result["embedding"]
+    face_id = add_person(embedding, name, user_id, user_type)
+
+    # optional: save every time or every 10 mins
+    save_database(str(settings.FACE_DATABASE_PATH))
+
+    return Response({
+        "message": f"{user_type.capitalize()} registered",
+        "face_id": face_id,
+        "total_registered": total_registered()
+    })
+
+
+@api_view(["POST"])
+def verify_identity_rust(request):
+    """Lightning-fast verification using Rust HNSW"""
+    user_type = request.data.get("type", "student")
+    qr_code = request.data.get("qr_code")
+
+    if "image" not in request.FILES:
+        return Response({"error": "Image required"}, status=400)
+
+    # Optional: validate QR
+    if qr_code:
+        try:
+            session = QRSession.objects.get(code=qr_code)
+            if not session.is_valid() or session.used:
+                return Response({"error": "Invalid/used QR"}, status=400)
+            session.used = True
+            session.save()
+        except QRSession.DoesNotExist:
+            return Response({"error": "Invalid QR"}, status=404)
+
+    file = request.FILES["image"]
+    result = detect_and_embed(file.read())
+
+    if not result["found"]:
+        return Response({"error": "No face detected"}, status=400)
+
+    embedding = result["embedding"]
+    matches = search_person(embedding, user_type, k=1)
+
+    if not matches or matches[0][1] < 0.6:  # similarity threshold
+        return Response({"error": "Face not recognized"}, status=404)
+
+    face_id = matches[0][0]
+    info = get_face_info(face_id)
+
+    # Mark attendance
+    if user_type == "student":
+        student = get_object_or_404(Student, roll_no=info["roll_no"])
+        Attendance.objects.get_or_create(
+            student=student, date=now().date(), defaults={"status": "Present"})
+    else:
+        teacher = get_object_or_404(Teacher, employee_id=info["roll_no"])
+        Attendance.objects.get_or_create(
+            teacher=teacher, date=now().date(), defaults={"status": "Present"})
+
+    return Response({
+        "message": "Verified!",
+        "name": info["name"],
+        "role": info["role"],
+        "similarity": round(matches[0][1], 3)
+    })
+
+
+def generate_frames():
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        _, buffer = cv2.imencode('.jpg', frame)
+        img_bytes = buffer.tobytes()
+
+        result = detect_and_embed(img_bytes)
+        if result["found"]:
+            x, y, w, h = result["bbox"]
+            embedding = result["embedding"]
+
+            for role in ["student", "teacher"]:
+                matches = search_person(embedding, role, k=1)
+                if matches and matches[0][1] > 0.6:
+                    info = get_face_info(matches[0][0])
+                    label = f"{info['name']} ({role})"
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.putText(frame, label, (x, y-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+
+@api_view(["GET"])
+def live_cctv(request):
+    return StreamingHttpResponse(generate_frames(), content_type="multipart/x-mixed-replace;boundary=frame")

@@ -1,0 +1,26 @@
+[project]
+name = "rust_backend"
+version = "0.1.5"
+requires-python = ">=3.8"
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+binding = "pyo3"
+module-name = "rust_backend.rust_backend"
+strip = true
+
+[tool.maturin.libtorch]
+version = "2.8.0"
+download = true
+device = "cpu"
+target = "x86_64-pc-windows-msvc"
+
+[tool.maturin.opencv]
+version = "4.11.0"
+download = true
+header-only = false
+target = "x86_64-pc-windows-msvc"

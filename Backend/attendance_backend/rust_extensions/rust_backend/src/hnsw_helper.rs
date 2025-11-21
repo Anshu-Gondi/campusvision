@@ -1,6 +1,6 @@
 // src/hnsw_helper.rs  ← FINAL FOR HNSW_RS 0.3 – COPIES EMBEDDINGS, REBUILDS ON LOAD
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use hnsw_rs::prelude::*;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ pub fn add_embedding(
     role: String,
 ) -> Result<usize> {
     let is_teacher = role == "teacher";
-    let mut index = if is_teacher {
+    let index = if is_teacher {
         TEACHER_INDEX.lock().unwrap()
     } else {
         STUDENT_INDEX.lock().unwrap()
