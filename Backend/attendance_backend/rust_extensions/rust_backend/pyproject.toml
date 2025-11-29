@@ -1,26 +1,35 @@
 [project]
 name = "rust_backend"
 version = "0.1.5"
-requires-python = ">=3.8"
+description = "Ultra-fast face recognition + anti-spoofing for college attendance"
+requires-python = ">=3.10"
+dependencies = []
 
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
+# Critical for Windows + bundled DLLs
 features = ["pyo3/extension-module"]
 binding = "pyo3"
-module-name = "rust_backend.rust_backend"
+module-name = "rust_backend.core"        # <-- change this to your actual lib.rs module name
 strip = true
 
+# Auto-download + bundle libtorch CPU (2.8.0)
 [tool.maturin.libtorch]
 version = "2.8.0"
 download = true
 device = "cpu"
 target = "x86_64-pc-windows-msvc"
 
+# Auto-download + bundle OpenCV 4.11
 [tool.maturin.opencv]
 version = "4.11.0"
 download = true
 header-only = false
 target = "x86_64-pc-windows-msvc"
+
+# Optional: make the wheel smaller
+[tool.maturin.cargo]
+extra-args = ["--locked"]

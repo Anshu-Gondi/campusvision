@@ -21,9 +21,6 @@ urlpatterns = [
     path("face/verify/", views.verify_identity_rust, name="verify_identity_rust"),
     path("face/live-cctv/", views.live_cctv, name="live_cctv"),
 
-    # ====================== OLD DEEPFACE (KEEP FOR BACKUP) ======================
-    path("verify-old/", views.verify_identity, name="verify_identity_old"),
-
     # ====================== QR SYSTEM ======================
     path("qr/create/", views.create_qr_session, name="create_qr_session"),
     path("qr/validate/<uuid:code>/", views.validate_qr_session, name="validate_qr_session"),

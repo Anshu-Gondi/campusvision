@@ -1,5 +1,3 @@
-// src/hnsw_helper.rs  ← FINAL FOR HNSW_RS 0.3 – COPIES EMBEDDINGS, REBUILDS ON LOAD
-
 use anyhow::Result;
 use hnsw_rs::prelude::*;
 use once_cell::sync::Lazy;
@@ -9,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// Metadata stored for each face
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FaceMetadata {
     pub id: usize,
@@ -21,6 +20,7 @@ pub struct FaceMetadata {
 type IndexType = Hnsw<'static, f32, DistCosine>;
 
 static STUDENT_INDEX: Lazy<Mutex<IndexType>> = Lazy::new(|| {
+    // M = 16, max_elements = 50_000, ef_construction = 200, max_nb_links = 50
     Mutex::new(Hnsw::new(16, 50_000, 200, 50, DistCosine))
 });
 
@@ -30,6 +30,9 @@ static TEACHER_INDEX: Lazy<Mutex<IndexType>> = Lazy::new(|| {
 
 static METADATA: Lazy<Mutex<HashMap<usize, FaceMetadata>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+// Store actual embeddings keyed by id so we can save and rebuild the graph on load
+static EMBEDDINGS: Lazy<Mutex<HashMap<usize, Vec<f32>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
 /// Add a face embedding with name, roll_no, and role
 pub fn add_embedding(
     embedding: Vec<f32>,
@@ -38,44 +41,53 @@ pub fn add_embedding(
     role: String,
 ) -> Result<usize> {
     let is_teacher = role == "teacher";
-    let index = if is_teacher {
+    // lock index for insertion
+    let mut idx = if is_teacher {
         TEACHER_INDEX.lock().unwrap()
     } else {
         STUDENT_INDEX.lock().unwrap()
     };
 
-    let mut meta = METADATA.lock().unwrap();
-
-    // FIXED: Use get_nb_point() (no graph() method)
-    let base_id = index.get_nb_point() as usize;
+    // next id is current number of points
+    let base_id = idx.get_nb_point() as usize;
     let id = if is_teacher { 1_000_000 + base_id } else { base_id };
 
-    // FIXED: Borrow Vec<f32> as &[f32] for insert
-    index.insert((&embedding[..], id));
+    // insert embedding into index (borrow slice)
+    idx.insert((&embedding[..], id));
 
-    meta.insert(
-        id,
-        FaceMetadata {
+    // persist metadata + embedding in memory maps
+    {
+        let mut meta = METADATA.lock().unwrap();
+        meta.insert(
             id,
-            name,
-            roll_no,
-            role,
-        },
-    );
+            FaceMetadata {
+                id,
+                name,
+                roll_no,
+                role: if is_teacher { "teacher".to_string() } else { "student".to_string() },
+            },
+        );
+    }
+    {
+        let mut em = EMBEDDINGS.lock().unwrap();
+        em.insert(id, embedding);
+    }
 
     Ok(id)
 }
 
 /// Search only within student or teacher index
 pub fn search_in_role(embedding: &[f32], role: &str, k: usize) -> Vec<(usize, f32)> {
-    let index = if role == "teacher" {
+    // use higher ef for search for better recall; we pass ef_search=200
+    let ef_search = 200usize;
+
+    let idx = if role == "teacher" {
         TEACHER_INDEX.lock().unwrap()
     } else {
         STUDENT_INDEX.lock().unwrap()
     };
 
-    index
-        .search(embedding, k, 50)
+    idx.search(embedding, k, ef_search)
         .into_iter()
         .map(|n| (n.d_id, 1.0 - n.distance)) // (id, similarity)
         .collect()
@@ -101,7 +113,7 @@ pub fn count_by_role(role: &str) -> usize {
         .count()
 }
 
-/// Save embeddings + metadata (rebuild HNSW on load – fast & simple)
+/// Save embeddings + metadata (rebuild HNSW on load)
 #[derive(Serialize, Deserialize)]
 struct SerializableData {
     student_embeddings: Vec<(Vec<f32>, usize)>,
@@ -114,17 +126,20 @@ pub fn save_all(base_path: &str) -> Result<()> {
     fs::create_dir_all(p)?;
 
     let meta = METADATA.lock().unwrap();
+    let em = EMBEDDINGS.lock().unwrap();
 
-    // Collect embeddings from metadata (rebuild logic)
     let mut student_embs = Vec::new();
     let mut teacher_embs = Vec::new();
+
     for (id, m) in meta.iter() {
-        // In real use, you'd store embeddings separately – here we skip for simplicity
-        // (since HNSW doesn't serialize, we just save metadata & rebuild empty on load)
-        if m.role == "student" {
-            student_embs.push((vec![0.0; 512], *id)); // Placeholder – see note below
+        if let Some(embedding) = em.get(id) {
+            if m.role == "student" {
+                student_embs.push((embedding.clone(), *id));
+            } else {
+                teacher_embs.push((embedding.clone(), *id));
+            }
         } else {
-            teacher_embs.push((vec![0.0; 512], *id));
+            // skip entries without saved embeddings (shouldn't usually happen)
         }
     }
 
@@ -138,7 +153,7 @@ pub fn save_all(base_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load from disk & REBUILD HNSW (0.5s for 50k faces – no accuracy loss)
+/// Load from disk & REBUILD HNSW
 pub fn load_all(base_path: &str) -> Result<()> {
     let p = Path::new(base_path);
     if !p.exists() {
@@ -147,20 +162,34 @@ pub fn load_all(base_path: &str) -> Result<()> {
 
     if let Ok(data_bytes) = fs::read(p.join("data.bin")) {
         if let Ok(data) = bincode::deserialize::<SerializableData>(&data_bytes) {
-            let mut meta = METADATA.lock().unwrap();
-            *meta = data.metadata;
+            // restore metadata and embeddings
+            {
+                let mut meta = METADATA.lock().unwrap();
+                *meta = data.metadata;
+            }
+            {
+                let mut em = EMBEDDINGS.lock().unwrap();
+                em.clear();
+                for (emb, id) in data.student_embeddings.iter().chain(data.teacher_embeddings.iter()) {
+                    em.insert(*id, emb.clone());
+                }
+            }
 
             // Rebuild indices from saved embeddings
-            let mut s_idx = STUDENT_INDEX.lock().unwrap();
-            let mut t_idx = TEACHER_INDEX.lock().unwrap();
-            *s_idx = Hnsw::new(16, 50_000, 200, 50, DistCosine); // Reset & rebuild
-            *t_idx = Hnsw::new(16, 5_000, 200, 50, DistCosine);
+            {
+                let mut s_idx = STUDENT_INDEX.lock().unwrap();
+                let mut t_idx = TEACHER_INDEX.lock().unwrap();
+                *s_idx = Hnsw::new(16, 50_000, 200, 50, DistCosine);
+                *t_idx = Hnsw::new(16, 5_000, 200, 50, DistCosine);
 
-            for (emb, id) in data.student_embeddings {
-                s_idx.insert((&emb[..], id));
-            }
-            for (emb, id) in data.teacher_embeddings {
-                t_idx.insert((&emb[..], id));
+                // insert student embeddings
+                for (emb, id) in data.student_embeddings {
+                    s_idx.insert((&emb[..], id));
+                }
+                // insert teacher embeddings
+                for (emb, id) in data.teacher_embeddings {
+                    t_idx.insert((&emb[..], id));
+                }
             }
         }
     }

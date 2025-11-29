@@ -123,6 +123,14 @@ class QRSession(models.Model):
     def __str__(self):
         return f"{self.code} valid till {self.expires_at}"
 
+# -----------------  CCTV Camera -----------------
+class Camera(models.Model):
+    name = models.CharField(max_length=100)
+    url = models.CharField(max_length=500)  # RTSP/HTTP URL or "0" for webcam
+    active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
 
 # Delete old image file on update
 @receiver(pre_save, sender=Student)

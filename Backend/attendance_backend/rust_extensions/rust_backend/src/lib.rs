@@ -118,11 +118,11 @@ fn total_registered() -> PyResult<usize> {
 #[pyfunction]
 fn detect_and_embed(image_bytes: Vec<u8>) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        // Decode image
+        // Decode once
         let mat = imgcodecs::imdecode(&Vector::from_slice(&image_bytes), imgcodecs::IMREAD_COLOR)
             .map_err(|e| PyValueError::new_err(format!("OpenCV decode failed: {}", e)))?;
 
-        // Detect faces using YuNet
+        // Detect faces using YuNet (returns matrix of detections)
         let faces = preprocess::detect_faces(&mat, "models/face_detection_yunet_2023mar.onnx", Size::new(320, 320), 0.6)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
@@ -131,12 +131,16 @@ fn detect_and_embed(image_bytes: Vec<u8>) -> PyResult<PyObject> {
 
         let dict = PyDict::new(py);
 
-        if let Some((rect, _landmarks)) = best {
-            let tensor = preprocess::preprocess_image(&image_bytes)
+        if let Some((rect, landmarks)) = best {
+            // preprocess using the already-detected bbox & landmarks (avoid double detection)
+            let tensor = preprocess::preprocess_from_mat_and_landmarks(&mat, rect, &landmarks)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-            let embedding = tch_model::run_face_model(&tensor)
-                .unwrap_or_else(|_| ort_model::run_face_model_onnx(&tensor).unwrap());
+            // Prefer torchscript model (tch_model -> TorchScript .pt); fall back to ONNX if needed
+            let embedding = match tch_model::run_face_model(&tensor) {
+                Ok(v) => v,
+                Err(_) => ort_model::run_face_model_onnx(&tensor).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            };
 
             dict.set_item("found", true)?;
             dict.set_item("bbox", (rect.x, rect.y, rect.width, rect.height))?;
@@ -173,7 +177,7 @@ fn query_similar(embedding: Vec<f32>, k: usize) -> PyResult<Vec<usize>> {
 // ──────────────────────────────────────────────────────────────
 
 #[pymodule]
-fn rust_backend(_py: Python, m: &PyModule) -> PyResult<()> {
+fn core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_face, m)?)?;
     m.add_function(wrap_pyfunction!(detect_emotion, m)?)?;
 

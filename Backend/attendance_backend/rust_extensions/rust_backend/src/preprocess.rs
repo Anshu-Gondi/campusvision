@@ -1,4 +1,3 @@
-// preprocess_combined.rs
 use anyhow::{anyhow, Result};
 use opencv::{
     core::{self, Mat, Point2f, Rect, Scalar, Size, Vector, AlgorithmHint},
@@ -14,6 +13,7 @@ const FACE_NET_SIZE: i32 = 160;
 const YUNET_MODEL_PATH: &str = "models/face_detection_yunet_2023mar.onnx";
 
 /// Preprocess image bytes → normalized [1, 3, 160, 160] tensor ready for FaceNet
+/// This version DETECTS the face (calls YuNet), then aligns and returns the tensor.
 pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
     // 1. Decode image (BGR)
     let mat = imgcodecs::imdecode(&Vector::from_slice(image_bytes), imgcodecs::IMREAD_COLOR)
@@ -23,12 +23,18 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
     }
 
     // 2. Detect faces with YuNet
-    let input_size = Size::new(320, 320); // good speed/accuracy trade-off
+    let input_size = Size::new(320, 320); // speed/accuracy trade-off
     let faces = detect_faces(&mat, YUNET_MODEL_PATH, input_size, 0.6)?;
     let best = pick_best_face(&faces)?.ok_or_else(|| anyhow!("No face detected"))?;
-    let (mut face_rect, landmarks) = best;
+    let (face_rect, landmarks) = best;
 
-    // 3. Clamp bounding box to image bounds
+    preprocess_from_mat_and_landmarks(&mat, face_rect, &landmarks)
+}
+
+/// Preprocess given an already-detected face rectangle + landmarks on the original Mat.
+/// This is used to avoid double detection when you already detected faces (detect_and_embed).
+pub fn preprocess_from_mat_and_landmarks(mat: &Mat, mut face_rect: Rect, landmarks: &[Point2f]) -> Result<Tensor> {
+    // 1. Clamp bounding box to image bounds
     let img_w = mat.cols();
     let img_h = mat.rows();
     face_rect.x = face_rect.x.max(0);
@@ -40,11 +46,10 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
         return Err(anyhow!("Invalid face bounding box after clamping"));
     }
 
-    // 4. Extract face ROI
-    let face_roi = Mat::roi(&mat, face_rect)
-        .map_err(|_| anyhow!("Failed to extract face ROI"))?;
+    // 2. Extract face ROI
+    let face_roi = Mat::roi(mat, face_rect).map_err(|_| anyhow!("Failed to extract face ROI"))?;
 
-    // 5. Eye positions relative to the ROI
+    // 3. Eye positions relative to the ROI
     let eye_right = Point2f::new(
         landmarks[0].x - face_rect.x as f32,
         landmarks[0].y - face_rect.y as f32,
@@ -54,11 +59,11 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
         landmarks[1].y - face_rect.y as f32,
     );
 
-    // 6. Desired eye positions in the final 160×160 image
+    // 4. Desired eye positions in the final 160×160 image
     let desired_right_eye = Point2f::new(48.0, 48.0);
     let desired_left_eye  = Point2f::new(112.0, 48.0);
 
-    // 7. Compute affine transform to align eyes
+    // 5. Compute affine transform to align eyes
     let src_points = vec![eye_right, eye_left];
     let dst_points = vec![desired_right_eye, desired_left_eye];
     let warp_mat = imgproc::get_affine_transform(
@@ -66,7 +71,7 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
         &Vector::from_slice(&dst_points),
     )?;
 
-    // 8. Warp + resize to 160×160
+    // 6. Warp + resize to 160×160
     let mut aligned = Mat::default();
     imgproc::warp_affine(
         &face_roi,
@@ -78,37 +83,30 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
         Scalar::all(0.0),
     )?;
 
-    // 9. Convert BGR → RGB
+    // 7. Convert BGR → RGB
     let mut rgb = Mat::default();
-    imgproc::cvt_color(
-        &aligned,
-        &mut rgb,
-        imgproc::COLOR_BGR2RGB,
-        0,
-        AlgorithmHint::ALGO_HINT_DEFAULT,
-    )?;
+    imgproc::cvt_color(&aligned, &mut rgb, imgproc::COLOR_BGR2RGB, 0, AlgorithmHint::ALGO_HINT_DEFAULT)?;
 
-    // 10. Convert to tch::Tensor and normalize for FaceNet
+    // 8. Convert to tch::Tensor and normalize for FaceNet
+    // Ensure data exist
+    let data_u8 = rgb.data_typed::<u8>()?;
     let tensor = Tensor::from_data_size(
-        rgb.data_typed::<u8>()?,
+        data_u8,
         &[FACE_NET_SIZE as i64, FACE_NET_SIZE as i64, 3],
         tch::Kind::Uint8,
     );
 
     let tensor_f32 = tensor.to_kind(tch::Kind::Float) / 255.0;
-    let normalized = (tensor_f32 - 0.5) / 0.5; // equivalent to (x - 127.5)/128.0
+    let normalized = (tensor_f32 - 0.5) / 0.5; // (x - 0.5)/0.5 == (x*2 -1)
 
     // Final shape: [1, 3, 160, 160]
     Ok(normalized.unsqueeze(0).permute(&[0, 3, 1, 2]))
 }
 
 // ---------------------------------------------------------------------------
-// YuNet face detection helpers
+// YuNet face detection helpers (unchanged except comments)
 // ---------------------------------------------------------------------------
 
-/// Detect faces using YuNet (FaceDetectorYN).
-/// Returns a Mat where each row is: [x, y, w, h, right_eye_x, right_eye_y, left_eye_x, left_eye_y,
-///                                 nose_x, nose_y, mouth_right_x, mouth_right_y, mouth_left_x, mouth_left_y, score]
 pub fn detect_faces(
     mat: &Mat,
     model_path: &str,
@@ -135,9 +133,6 @@ pub fn detect_faces(
     Ok(faces)
 }
 
-/// Pick the face with the highest confidence score.
-/// Returns Some((bbox: Rect, landmarks: Vec<Point2f>)) for the 5 key points:
-/// [right_eye, left_eye, nose, mouth_right, mouth_left]
 pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {
     if faces.empty() || faces.rows() == 0 {
         return Ok(None);

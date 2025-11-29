@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.timezone import now
-from .models import Student, Teacher, Attendance, QRSession
+from .models import Student, Teacher, Attendance, QRSession, StudentTimeTable, TeacherTimeTable, Camera
 from .serializers import StudentSerializer, StudentTimeTableSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer, TeacherTimeTableSerializer
 from rust_backend import (
     detect_and_embed, add_person, search_person,
@@ -441,36 +441,85 @@ def verify_identity_rust(request):
     })
 
 
-def generate_frames():
-    cap = cv2.VideoCapture(0)
+def generate_frames(url):
+    cap = cv2.VideoCapture(url)
+
+    if not cap.isOpened():
+        print(f"[ERROR] Cannot open camera: {url}")
+        return
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
+        # Encode frame → bytes
         _, buffer = cv2.imencode('.jpg', frame)
         img_bytes = buffer.tobytes()
 
+        # Run Rust face detection + embedding
         result = detect_and_embed(img_bytes)
+
         if result["found"]:
             x, y, w, h = result["bbox"]
             embedding = result["embedding"]
 
+            # Try matching in Student + Teacher DB
             for role in ["student", "teacher"]:
                 matches = search_person(embedding, role, k=1)
+
                 if matches and matches[0][1] > 0.6:
                     info = get_face_info(matches[0][0])
                     label = f"{info['name']} ({role})"
+
+                    # Draw detection
                     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
                     cv2.putText(frame, label, (x, y-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                (0, 255, 0), 2)
 
+        # Stream final frame
         _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
+        yield (
+            b'--frame\r\n'
+            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n'
+        )
+
+@api_view(["POST"])
+def add_camera(request):
+    name = request.data.get("name")
+    url = request.data.get("url")
+    if not name or not url:
+        return Response({"error": "Name and URL are required"}, status=400)
+    cam = Camera.objects.create(name=name, url=url)
+    return Response({"message": f"Camera {cam.name} added successfully", "id": cam.id}, status=201)
 
 @api_view(["GET"])
+def list_cameras(request):
+    cameras = Camera.objects.filter(active=True)
+    data = [{"id": cam.id, "name": cam.name, "url": cam.url} for cam in cameras]
+    return Response(data)
+
+@api_view(["DELETE"])
+def delete_camera(request, camera_id):
+    try:
+        cam = Camera.objects.get(id=camera_id)
+        cam.delete()
+        return Response({"message": f"Camera {cam.name} deleted successfully"}, status=200)
+    except Camera.DoesNotExist:
+        return Response({"error": "Camera not found"}, status=404)
+    
+@api_view(["GET"])
 def live_cctv(request):
-    return StreamingHttpResponse(generate_frames(), content_type="multipart/x-mixed-replace;boundary=frame")
+    camera_id = request.GET.get("camera_id")
+    try:
+        camera = Camera.objects.get(id=camera_id, active=True)
+    except Camera.DoesNotExist:
+        return Response({"error": "Camera not found"}, status=404)
+
+    return StreamingHttpResponse(
+        generate_frames(camera.url),
+        content_type="multipart/x-mixed-replace;boundary=frame"
+    )
