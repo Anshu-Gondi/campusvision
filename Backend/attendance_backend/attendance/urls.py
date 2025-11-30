@@ -19,7 +19,12 @@ urlpatterns = [
     # ====================== RUST FACE RECOGNITION (NEW ERA) ======================
     path("face/register/", views.register_face_rust, name="register_face_rust"),
     path("face/verify/", views.verify_identity_rust, name="verify_identity_rust"),
-    path("face/live-cctv/", views.live_cctv, name="live_cctv"),
+    
+    # ====================== CCTV CAMERA MANAGEMENT ======================
+    path("cameras/", views.list_cameras, name="list_cameras"),
+    path("cameras/add/", views.add_camera, name="add_camera"),
+    path("cameras/delete/<int:camera_id>/", views.delete_camera, name="delete_camera"),
+    path("cameras/live-cctv/", views.live_cctv, name="live_cctv"),
 
     # ====================== QR SYSTEM ======================
     path("qr/create/", views.create_qr_session, name="create_qr_session"),

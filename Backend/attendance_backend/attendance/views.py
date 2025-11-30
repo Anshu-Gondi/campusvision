@@ -1,6 +1,7 @@
+from datetime import timedelta
 from django.http import StreamingHttpResponse
 from django.conf import settings
-from .models import QRSession, Attendance, Student, StudentTimeTable, Teacher, TeacherTimeTable
+from .models import CameraMatch, QRSession, Attendance, Student, StudentTimeTable, Teacher, TeacherTimeTable
 from rest_framework.decorators import api_view, permission_classes
 from django.shortcuts import get_object_or_404
 from concurrent.futures import ThreadPoolExecutor
@@ -441,7 +442,23 @@ def verify_identity_rust(request):
     })
 
 
-def generate_frames(url):
+# ----------------- CCTV SETUP HELPERS -----------------
+
+def evaluate_multi_camera(person_id):
+    time_limit = now() - timedelta(seconds=10)
+
+    matches = CameraMatch.objects.filter(
+        person_id=person_id,
+        timestamp__gte=time_limit
+    ).values("camera").distinct().count()
+
+    total_cameras = Camera.objects.filter(active=True).count()
+
+    required = int((0.8 * total_cameras) + 0.999)  # ceil without math
+
+    return matches >= required
+
+def generate_frames(url, camera_id):
     cap = cv2.VideoCapture(url)
 
     if not cap.isOpened():
@@ -453,32 +470,60 @@ def generate_frames(url):
         if not ret:
             break
 
-        # Encode frame → bytes
+        # Convert frame → image bytes for Rust
         _, buffer = cv2.imencode('.jpg', frame)
         img_bytes = buffer.tobytes()
 
-        # Run Rust face detection + embedding
+        # Rust face detection + embedding
         result = detect_and_embed(img_bytes)
 
         if result["found"]:
             x, y, w, h = result["bbox"]
             embedding = result["embedding"]
 
-            # Try matching in Student + Teacher DB
+            # Try student + teacher DB
             for role in ["student", "teacher"]:
                 matches = search_person(embedding, role, k=1)
 
                 if matches and matches[0][1] > 0.6:
+
                     info = get_face_info(matches[0][0])
-                    label = f"{info['name']} ({role})"
+                    person_id = info["roll_no"]
+                    similarity = matches[0][1]
+                    name = info["name"]
 
-                    # Draw detection
+                    # ----------------------------
+                    # ⭐ STEP 3 — STORE MATCH IN DB
+                    # ----------------------------
+                    CameraMatch.objects.create(
+                        person_id=person_id,
+                        camera_id=camera_id,
+                        similarity=similarity
+                    )
+
+                    # -----------------------------------
+                    # ⭐ STEP 5 — AUTO MULTI-CAMERA ATTENDANCE
+                    # -----------------------------------
+                    if evaluate_multi_camera(person_id):
+                        student = Student.objects.filter(roll_no=person_id).first()
+                        if student:
+                            Attendance.objects.get_or_create(
+                                student=student,
+                                date=now().date(),
+                                defaults={"status": "Present"}
+                            )
+
+                    # Draw box + name
                     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                    cv2.putText(frame, label, (x, y-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                                (0, 255, 0), 2)
+                    cv2.putText(
+                        frame,
+                        f"{name} ({role})",
+                        (x, y-10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9, (0, 255, 0), 2
+                    )
 
-        # Stream final frame
+        # Final frame streaming
         _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
 
@@ -486,6 +531,8 @@ def generate_frames(url):
             b'--frame\r\n'
             b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n'
         )
+
+# ----------------- CCTV Camera APIs -----------------
 
 @api_view(["POST"])
 def add_camera(request):
@@ -520,6 +567,6 @@ def live_cctv(request):
         return Response({"error": "Camera not found"}, status=404)
 
     return StreamingHttpResponse(
-        generate_frames(camera.url),
+        generate_frames(camera.url, camera.id),
         content_type="multipart/x-mixed-replace;boundary=frame"
     )

@@ -126,11 +126,18 @@ class QRSession(models.Model):
 # -----------------  CCTV Camera -----------------
 class Camera(models.Model):
     name = models.CharField(max_length=100)
-    url = models.CharField(max_length=500)  # RTSP/HTTP URL or "0" for webcam
+    url = models.CharField(max_length=500)
+    floor = models.CharField(max_length=50, null=True, blank=True)
+    room = models.CharField(max_length=50, null=True, blank=True)
     active = models.BooleanField(default=True)
 
-    def __str__(self):
-        return self.name
+class CameraMatch(models.Model):
+    person_id = models.CharField(max_length=100)  # roll_no or employee_id
+    camera = models.ForeignKey(Camera, on_delete=models.CASCADE)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    similarity = models.FloatField()
+
+
 
 # Delete old image file on update
 @receiver(pre_save, sender=Student)
