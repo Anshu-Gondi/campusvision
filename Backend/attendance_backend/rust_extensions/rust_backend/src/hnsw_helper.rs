@@ -42,7 +42,7 @@ pub fn add_embedding(
 ) -> Result<usize> {
     let is_teacher = role == "teacher";
     // lock index for insertion
-    let mut idx = if is_teacher {
+    let idx = if is_teacher {
         TEACHER_INDEX.lock().unwrap()
     } else {
         STUDENT_INDEX.lock().unwrap()
