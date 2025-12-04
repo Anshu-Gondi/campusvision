@@ -177,7 +177,7 @@ fn query_similar(embedding: Vec<f32>, k: usize) -> PyResult<Vec<usize>> {
 // ──────────────────────────────────────────────────────────────
 
 #[pymodule]
-fn core(_py: Python, m: &PyModule) -> PyResult<()> {
+fn rust_backend(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_face, m)?)?;
     m.add_function(wrap_pyfunction!(detect_emotion, m)?)?;
 

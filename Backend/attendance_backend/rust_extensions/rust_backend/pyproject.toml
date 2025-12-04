@@ -13,7 +13,7 @@ build-backend = "maturin"
 # Critical for Windows + bundled DLLs
 features = ["pyo3/extension-module"]
 binding = "pyo3"
-module-name = "rust_backend.core"        # <-- change this to your actual lib.rs module name
+module-name = "rust_backend"        # <-- change this to your actual lib.rs module name
 strip = true
 
 # Auto-download + bundle libtorch CPU (2.8.0)
