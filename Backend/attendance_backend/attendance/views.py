@@ -1,14 +1,14 @@
 from datetime import timedelta
+from queue import Queue
+import threading
 from django.http import StreamingHttpResponse
 from django.conf import settings
 from .models import CameraMatch, QRSession, Attendance, Student, StudentTimeTable, Teacher, TeacherTimeTable
 from rest_framework.decorators import api_view, permission_classes
 from django.shortcuts import get_object_or_404
 from concurrent.futures import ThreadPoolExecutor
-import os
 import cv2
 import numpy as np
-import face_recognition
 from django.shortcuts import get_object_or_404, redirect
 from django.db.models import Count, Q
 from rest_framework.decorators import api_view
@@ -441,24 +441,26 @@ def verify_identity_rust(request):
         "similarity": round(matches[0][1], 3)
     })
 
+# ----------------- Background Frame Queues -----------------
+FRAME_QUEUES = {}  # camera_id -> Queue(maxsize=5)
+WORKER_THREADS = {}  # camera_id -> Thread
 
 # ----------------- CCTV SETUP HELPERS -----------------
-
 def evaluate_multi_camera(person_id):
     time_limit = now() - timedelta(seconds=10)
-
     matches = CameraMatch.objects.filter(
         person_id=person_id,
         timestamp__gte=time_limit
     ).values("camera").distinct().count()
 
     total_cameras = Camera.objects.filter(active=True).count()
-
     required = int((0.8 * total_cameras) + 0.999)  # ceil without math
-
     return matches >= required
 
-def generate_frames(url, camera_id):
+# ----------------- Camera Worker -----------------
+def camera_worker(camera_id, url):
+    q = Queue(maxsize=5)
+    FRAME_QUEUES[camera_id] = q
     cap = cv2.VideoCapture(url)
 
     if not cap.isOpened():
@@ -468,7 +470,7 @@ def generate_frames(url, camera_id):
     while True:
         ret, frame = cap.read()
         if not ret:
-            break
+            continue
 
         # Convert frame → image bytes for Rust
         _, buffer = cv2.imencode('.jpg', frame)
@@ -481,19 +483,17 @@ def generate_frames(url, camera_id):
             x, y, w, h = result["bbox"]
             embedding = result["embedding"]
 
-            # Try student + teacher DB
+            # Check in both student + teacher DB
             for role in ["student", "teacher"]:
                 matches = search_person(embedding, role, k=1)
-
                 if matches and matches[0][1] > 0.6:
-
                     info = get_face_info(matches[0][0])
                     person_id = info["roll_no"]
                     similarity = matches[0][1]
                     name = info["name"]
 
                     # ----------------------------
-                    # ⭐ STEP 3 — STORE MATCH IN DB
+                    # Store match in DB
                     # ----------------------------
                     CameraMatch.objects.create(
                         person_id=person_id,
@@ -501,29 +501,45 @@ def generate_frames(url, camera_id):
                         similarity=similarity
                     )
 
-                    # -----------------------------------
-                    # ⭐ STEP 5 — AUTO MULTI-CAMERA ATTENDANCE
-                    # -----------------------------------
+                    # ----------------------------
+                    # Multi-camera attendance
+                    # ----------------------------
                     if evaluate_multi_camera(person_id):
                         student = Student.objects.filter(roll_no=person_id).first()
                         if student:
-                            Attendance.objects.get_or_create(
+                            Student.objects.get_or_create(
                                 student=student,
                                 date=now().date(),
                                 defaults={"status": "Present"}
                             )
 
-                    # Draw box + name
+                    # Overlay box + name
                     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                    cv2.putText(
-                        frame,
-                        f"{name} ({role})",
-                        (x, y-10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9, (0, 255, 0), 2
-                    )
+                    cv2.putText(frame, f"{name} ({role})", (x, y-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-        # Final frame streaming
+        # Put latest frame in queue
+        if q.full():
+            q.get()  # discard oldest
+        q.put(frame)
+
+# ----------------- Start Background Camera -----------------
+def start_camera_thread(camera):
+    if camera.id not in WORKER_THREADS:
+        t = threading.Thread(target=camera_worker, args=(camera.id, camera.url), daemon=True)
+        t.start()
+        WORKER_THREADS[camera.id] = t
+
+# ----------------- Live CCTV Stream -----------------
+def generate_frames(camera_id):
+    q = FRAME_QUEUES.get(camera_id)
+    if not q:
+        return
+
+    while True:
+        if q.empty():
+            continue
+        frame = q.get()
         _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
 
@@ -557,16 +573,19 @@ def delete_camera(request, camera_id):
         return Response({"message": f"Camera {cam.name} deleted successfully"}, status=200)
     except Camera.DoesNotExist:
         return Response({"error": "Camera not found"}, status=404)
-    
+
 @api_view(["GET"])
 def live_cctv(request):
-    camera_id = request.GET.get("camera_id")
+    camera_id = int(request.GET.get("camera_id"))
     try:
         camera = Camera.objects.get(id=camera_id, active=True)
     except Camera.DoesNotExist:
         return Response({"error": "Camera not found"}, status=404)
 
+    # Start background thread if not running
+    start_camera_thread(camera)
+
     return StreamingHttpResponse(
-        generate_frames(camera.url, camera.id),
+        generate_frames(camera.id),
         content_type="multipart/x-mixed-replace;boundary=frame"
     )
