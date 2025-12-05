@@ -22,7 +22,8 @@ from .models import Student, Teacher, Attendance, QRSession, StudentTimeTable, T
 from .serializers import StudentSerializer, StudentTimeTableSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer, TeacherTimeTableSerializer
 from rust_backend import (
     detect_and_embed, add_person, search_person,
-    get_face_info, save_database, total_registered
+    get_face_info, save_database, total_registered,
+    cctv_process_frame, cctv_clear_daily
 )
 
 # ----------------- CRUD ViewSets -----------------
@@ -441,11 +442,11 @@ def verify_identity_rust(request):
         "similarity": round(matches[0][1], 3)
     })
 
-# ----------------- Background Frame Queues -----------------
-FRAME_QUEUES = {}  # camera_id -> Queue(maxsize=5)
-WORKER_THREADS = {}  # camera_id -> Thread
+# ----------------- Background Frame Queues (updated) -----------------
+FRAME_QUEUES = {}      # camera_id -> Queue(maxsize=5)
+WORKER_THREADS = {}    # camera_id -> Thread
 
-# ----------------- CCTV SETUP HELPERS -----------------
+# ----------------- Multi-Camera Attendance Logic (you already had this) -----------------
 def evaluate_multi_camera(person_id):
     time_limit = now() - timedelta(seconds=10)
     matches = CameraMatch.objects.filter(
@@ -454,99 +455,148 @@ def evaluate_multi_camera(person_id):
     ).values("camera").distinct().count()
 
     total_cameras = Camera.objects.filter(active=True).count()
-    required = int((0.8 * total_cameras) + 0.999)  # ceil without math
+    if total_cameras == 0:
+        return False
+    required = int((0.8 * total_cameras) + 0.999)  # 80% of active cameras
     return matches >= required
 
-# ----------------- Camera Worker -----------------
-def camera_worker(camera_id, url):
+
+# ----------------- Camera Worker (BEST OF BOTH WORLDS) -----------------
+def camera_worker(camera_id, url, role="student"):
     q = Queue(maxsize=5)
     FRAME_QUEUES[camera_id] = q
     cap = cv2.VideoCapture(url)
 
     if not cap.isOpened():
-        print(f"[ERROR] Cannot open camera: {url}")
+        print(f"[ERROR] Cannot open camera {camera_id}: {url}")
         return
+
+    print(f"[INFO] Camera {camera_id} started → Role: {role.upper()} | URL: {url}")
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            print(f"[WARN] Camera {camera_id} lost connection. Reconnecting...")
+            cap = cv2.VideoCapture(url)
             continue
 
-        # Convert frame → image bytes for Rust
-        _, buffer = cv2.imencode('.jpg', frame)
-        img_bytes = buffer.tobytes()
+        try:
+            # Encode frame
+            _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            img_bytes = buffer.tobytes()
 
-        # Rust face detection + embedding
-        result = detect_and_embed(img_bytes)
+            # Use our new RUST CCTV ENGINE (with tracking + once-per-day)
+            results = cctv_process_frame(
+                frame_bytes=img_bytes,
+                role=role,
+                min_confidence=0.68,
+                min_track_hits=10
+            )
 
-        if result["found"]:
-            x, y, w, h = result["bbox"]
-            embedding = result["embedding"]
+            # Process all tracked + identified faces
+            for person in results:
+                bbox = person["bbox"]
+                x, y, w, h = map(int, bbox)
+                name = person.get("name", "Unknown")
+                roll_no = person.get("roll_no", "")
+                confidence = person.get("confidence", 0.0)
+                mark_now = person.get("mark_now", False)
+                identified = person.get("identified", False)
 
-            # Check in both student + teacher DB
-            for role in ["student", "teacher"]:
-                matches = search_person(embedding, role, k=1)
-                if matches and matches[0][1] > 0.6:
-                    info = get_face_info(matches[0][0])
-                    person_id = info["roll_no"]
-                    similarity = matches[0][1]
-                    name = info["name"]
+                # Draw box
+                color = (0, 255, 0) if identified else (0, 255, 255)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                label = f"{name} ({confidence:.2f})"
+                if mark_now:
+                    label += " [MARKED]"
+                    cv2.putText(frame, "ATTENDANCE MARKED!", (50, 80),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 255, 0), 4)
 
-                    # ----------------------------
-                    # Store match in DB
-                    # ----------------------------
+                cv2.putText(frame, label, (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+                # ----------------- YOUR ORIGINAL MULTI-CAMERA LOGIC -----------------
+                if identified and roll_no:
                     CameraMatch.objects.create(
-                        person_id=person_id,
+                        person_id=roll_no,
                         camera_id=camera_id,
-                        similarity=similarity
+                        similarity=confidence
                     )
 
-                    # ----------------------------
-                    # Multi-camera attendance
-                    # ----------------------------
-                    if evaluate_multi_camera(person_id):
-                        student = Student.objects.filter(roll_no=person_id).first()
-                        if student:
-                            Student.objects.get_or_create(
-                                student=student,
-                                date=now().date(),
-                                defaults={"status": "Present"}
-                            )
+                    # Mark attendance using your original 80% camera rule
+                    if evaluate_multi_camera(roll_no):
+                        if role == "student":
+                            student = Student.objects.filter(roll_no=roll_no).first()
+                            if student:
+                                Attendance.objects.get_or_create(
+                                    student=student,
+                                    date=now().date(),
+                                    defaults={"status": "Present", "time": now().time()}
+                                )
+                        else:
+                            teacher = Teacher.objects.filter(employee_id=roll_no).first()
+                            if teacher:
+                                Attendance.objects.get_or_create(
+                                    teacher=teacher,
+                                    date=now().date(),
+                                    defaults={"status": "Present", "time": now().time()}
+                                )
 
-                    # Overlay box + name
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                    cv2.putText(frame, f"{name} ({role})", (x, y-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        except Exception as e:
+            print(f"[ERROR] CCTV processing failed on camera {camera_id}: {e}")
 
-        # Put latest frame in queue
+        # Send frame to frontend
         if q.full():
-            q.get()  # discard oldest
+            q.get()
         q.put(frame)
 
-# ----------------- Start Background Camera -----------------
+
+# ----------------- Start Background Camera (now supports role) -----------------
 def start_camera_thread(camera):
     if camera.id not in WORKER_THREADS:
-        t = threading.Thread(target=camera_worker, args=(camera.id, camera.url), daemon=True)
+        # Optional: Add `role` field to Camera model, fallback to "student"
+        role = getattr(camera, 'role', 'student') if hasattr(camera, 'role') else "student"
+        t = threading.Thread(
+            target=camera_worker,
+            args=(camera.id, camera.url, role),
+            daemon=True
+        )
         t.start()
         WORKER_THREADS[camera.id] = t
+        print(f"[STARTED] Camera {camera.name} (ID: {camera.id}) → Role: {role.upper()}")
 
-# ----------------- Live CCTV Stream -----------------
+
+# ----------------- Live CCTV Stream (unchanged) -----------------
 def generate_frames(camera_id):
     q = FRAME_QUEUES.get(camera_id)
     if not q:
         return
-
     while True:
         if q.empty():
             continue
         frame = q.get()
         _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
-        yield (
-            b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n'
-        )
+
+# ----------------- Daily Reset at Midnight -----------------
+def reset_daily_attendance():
+    cctv_clear_daily()  # Clears Rust's internal daily tracker
+    print(f"[RESET] Daily CCTV attendance cleared at {now()}")
+
+def start_daily_reset():
+    def run():
+        while True:
+            now_time = now()
+            next_midnight = (now_time + timedelta(days=1)).replace(hour=0, minute=0, second=10, microsecond=0)
+            sleep_time = (next_midnight - now_time).total_seconds()
+            threading.Event().wait(sleep_time)
+            reset_daily_attendance()
+    threading.Thread(target=run, daemon=True).start()
+
+# Start daily reset on server startup
+start_daily_reset()
 
 # ----------------- CCTV Camera APIs -----------------
 
