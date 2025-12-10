@@ -25,20 +25,39 @@ class Student(models.Model):
 class Teacher(models.Model):
     name = models.CharField(max_length=100)
     employee_id = models.CharField(max_length=20, unique=True)
-    subject = models.CharField(max_length=100)
-    class_name = models.CharField(max_length=50)
-    section = models.CharField(max_length=10)
+
+    # A teacher can teach multiple subjects
+    subjects = models.JSONField(default=list)  # ["Math", "Physics"]
+
+    # Can handle multiple class levels
+    can_teach_classes = models.JSONField(default=list)  # ["10-A", "10-B", "9-A"]
+
+    # How reliable the teacher is (based on historical attendance)
+    reliability_score = models.FloatField(default=0.8)
+
+    # Used to avoid overloading the same teacher
+    workload_score = models.IntegerField(default=0)
+
+    # Optional vector embedding for compatibility search
+    embedding_vector = models.JSONField(default=list, blank=True)
+
     image = models.ImageField(upload_to="teachers/", null=True, blank=True)
 
     def __str__(self):
         return f"{self.name} ({self.employee_id})"
 
+class SchoolClass(models.Model):
+    class_name = models.CharField(max_length=50, null=True, blank=True)   # "10"
+    section = models.CharField(max_length=10, null=True, blank=True)      # "A"
+
+    def __str__(self):
+        return f"{self.class_name}-{self.section}"
+
 # ----------------- Student Timetable -----------------
 
 
 class StudentTimeTable(models.Model):
-    class_name = models.CharField(max_length=50)
-    section = models.CharField(max_length=10)
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
     subject = models.CharField(max_length=100)
     day_of_week = models.CharField(
         max_length=10,
@@ -49,7 +68,7 @@ class StudentTimeTable(models.Model):
     end_time = models.TimeField()
 
     def __str__(self):
-        return f"{self.class_name}-{self.section} | {self.subject} | {self.day_of_week} {self.start_time}-{self.end_time}"
+        return f"{self.school_class} | {self.subject} | {self.day_of_week} {self.start_time}-{self.end_time}"
 
 
 # ----------------- Teacher Timetable -----------------
@@ -57,8 +76,7 @@ class StudentTimeTable(models.Model):
 class TeacherTimeTable(models.Model):
     teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE)
     subject = models.CharField(max_length=100)
-    class_name = models.CharField(max_length=50)   # e.g. "10th"
-    section = models.CharField(max_length=10)      # e.g. "A"
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
     day_of_week = models.CharField(
         max_length=10,
         choices=[("Monday", "Monday"), ("Tuesday", "Tuesday"), ("Wednesday", "Wednesday"),
@@ -68,7 +86,7 @@ class TeacherTimeTable(models.Model):
     end_time = models.TimeField()
 
     def __str__(self):
-        return f"{self.teacher.name} | {self.subject} | {self.day_of_week} {self.start_time}-{self.end_time}"
+        return f"{self.teacher.name} | {self.school_class} | {self.subject} | {self.day_of_week} {self.start_time}-{self.end_time}"
 
 # ----------------- Attendance -----------------
 

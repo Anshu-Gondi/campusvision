@@ -14,6 +14,7 @@ pub struct FaceMetadata {
     pub name: String,
     pub roll_no: String,
     pub role: String, // "student" or "teacher"
+    pub reliability: Option<f32>,
 }
 
 // Hnsw<'static, f32, DistCosine> – fully Send + Sync for Python
@@ -65,6 +66,7 @@ pub fn add_embedding(
                 name,
                 roll_no,
                 role: if is_teacher { "teacher".to_string() } else { "student".to_string() },
+                reliability: Some(0.8),
             },
         );
     }
