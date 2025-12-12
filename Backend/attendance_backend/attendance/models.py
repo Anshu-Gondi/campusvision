@@ -7,10 +7,59 @@ from django.core.exceptions import ValidationError
 from django.db.models.signals import post_delete, pre_save
 from django.dispatch import receiver
 
+# ----------------- Organization (School / College) -----------------
+
+class Organization(models.Model):
+    ORG_TYPES = [
+        ("school", "School"),
+        ("college", "College"),
+        ("institute", "Institute"),
+    ]
+
+    name = models.CharField(max_length=200)
+    org_type = models.CharField(max_length=20, choices=ORG_TYPES)
+    website = models.URLField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.org_type})"
+
+
+# ----------------- Branch / Campus -----------------
+
+class Branch(models.Model):
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
+    name = models.CharField(max_length=200)   # e.g., "Main Campus", "Delhi Branch", "Campus A"
+
+    address = models.CharField(max_length=500, null=True, blank=True)
+    city = models.CharField(max_length=100, null=True, blank=True)
+    state = models.CharField(max_length=100, null=True, blank=True)
+    pincode = models.CharField(max_length=20, null=True, blank=True)
+
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.organization.name} - {self.name}"
+
+
+# ----------------- Department (optional but useful) -----------------
+
+class Department(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    name = models.CharField(max_length=200)
+
+    def __str__(self):
+        return f"{self.branch.name} - {self.name}"
+
+
 # ----------------- Student -----------------
 
 
 class Student(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=100)
     roll_no = models.CharField(max_length=20, unique=True)
     class_name = models.CharField(max_length=50)
@@ -23,6 +72,8 @@ class Student(models.Model):
 
 # ----------------- Teacher -----------------
 class Teacher(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=100)
     employee_id = models.CharField(max_length=20, unique=True)
 
@@ -47,6 +98,7 @@ class Teacher(models.Model):
         return f"{self.name} ({self.employee_id})"
 
 class SchoolClass(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     class_name = models.CharField(max_length=50, null=True, blank=True)   # "10"
     section = models.CharField(max_length=10, null=True, blank=True)      # "A"
 
@@ -57,6 +109,7 @@ class SchoolClass(models.Model):
 
 
 class StudentTimeTable(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
     subject = models.CharField(max_length=100)
     day_of_week = models.CharField(
@@ -74,6 +127,7 @@ class StudentTimeTable(models.Model):
 # ----------------- Teacher Timetable -----------------
 
 class TeacherTimeTable(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE)
     subject = models.CharField(max_length=100)
     school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
@@ -92,6 +146,7 @@ class TeacherTimeTable(models.Model):
 
 
 class Attendance(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     student = models.ForeignKey(
         Student, on_delete=models.CASCADE, null=True, blank=True)
     teacher = models.ForeignKey(
@@ -143,6 +198,7 @@ class QRSession(models.Model):
 
 # -----------------  CCTV Camera -----------------
 class Camera(models.Model):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
     url = models.CharField(max_length=500)
     floor = models.CharField(max_length=50, null=True, blank=True)
