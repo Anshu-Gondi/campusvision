@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import views, api
 
 urlpatterns = [
     # ====================== STUDENT MANAGEMENT ======================
@@ -19,7 +19,7 @@ urlpatterns = [
     # ====================== RUST FACE RECOGNITION (NEW ERA) ======================
     path("face/register/", views.register_face_rust, name="register_face_rust"),
     path("face/verify/", views.verify_identity_rust, name="verify_identity_rust"),
-    
+
     # ====================== CCTV CAMERA MANAGEMENT ======================
     path("cameras/", views.list_cameras, name="list_cameras"),
     path("cameras/add/", views.add_camera, name="add_camera"),
@@ -35,4 +35,7 @@ urlpatterns = [
     path("analytics/teachers/", views.teacher_analytics, name="teacher_analytics"),
     path("analytics/student/<int:student_id>/", views.student_detail_analytics, name="student_detail_analytics"),
     path("analytics/teacher/<int:teacher_id>/", views.teacher_detail_analytics, name="teacher_detail_analytics"),
+
+    # ====================== ADMIN AUTHENTICATION ======================
+    path("api/admin/login/", api.admin_login),
 ]
