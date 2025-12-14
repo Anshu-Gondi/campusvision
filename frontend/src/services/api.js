@@ -107,3 +107,46 @@ export const adminLogin = async (combo) => {
   });
   return res.json();
 };
+
+// ---------------- Organizations Apis ----------------
+export const fetchOrganizations = async () => {
+  const res = await fetch(`${API_BASE}/organizations/`, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+  });
+  return res.json();
+};
+
+export const createOrganization = async (data) => {
+  return fetch(`${API_BASE}/organizations/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(data),
+  });
+};
+
+export const fetchBranches = async () => {
+  const res = await fetch(`${API_BASE}/branches/`, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+  });
+  return res.json();
+};
+
+export const createBranch = async (data) => {
+  return fetch(`${API_BASE}/branches/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(data),
+  });
+};
+
+

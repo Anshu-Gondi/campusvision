@@ -9,6 +9,12 @@ import AttendanceScanner from "./pages/Attendance/AttendanceScanner";
 import AttendanceForm from "./pages/Attendance/AttendanceForm";
 import AttendanceCamera from "./pages/Attendance/AttendanceCamera";
 import Analytics from "./pages/Analytics/analytics";
+import AdminAccess from "./pages/AdminAccess/AdminAccess";
+import AdminLayout from "./pages/Admin/AdminLayout";
+import AdminGuard from "./pages/Admin/AdminGuard";
+import Dashboard from "./pages/Admin/Dashboard";
+import Organizations from "./pages/Admin/Organizations";
+import Branches from "./pages/Admin/Branches";
 
 import 'bulma/css/bulma.min.css';
 
@@ -23,6 +29,19 @@ createRoot(document.getElementById("root")).render(
         <Route path="/attendance/form" element={<AttendanceForm />} />
         <Route path="/attendance/camera" element={<AttendanceCamera />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/admin-access" element={<AdminAccess />} />
+        <Route
+          path="/admin"
+          element={
+            <AdminGuard>
+              <AdminLayout />
+            </AdminGuard>
+          }
+        >
+          <Route index element={<Dashboard />} />
+          <Route path="orgs" element={<Organizations />} />
+          <Route path="branches" element={<Branches />} />
+        </Route>
       </Routes>
     </BrowserRouter>
   </StrictMode>
