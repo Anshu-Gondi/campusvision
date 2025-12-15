@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import views, org_apis
 
 urlpatterns = [
     # ====================== STUDENT MANAGEMENT ======================
@@ -35,4 +35,7 @@ urlpatterns = [
     path("analytics/teachers/", views.teacher_analytics, name="teacher_analytics"),
     path("analytics/student/<int:student_id>/", views.student_detail_analytics, name="student_detail_analytics"),
     path("analytics/teacher/<int:teacher_id>/", views.teacher_detail_analytics, name="teacher_detail_analytics"),
+
+    # ====================== ORGANIZATION/Branch MANAGEMENT ======================
+    path("register-organization/", org_apis.register_organization, name="register_organization"),
 ]

@@ -1,16 +1,17 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { adminLogin } from "../../services/api";
 
 export default function AdminAccess() {
+  const [organization, setOrganization] = useState("");
   const [combo, setCombo] = useState([]);
   const [display, setDisplay] = useState("");
   const [message, setMessage] = useState("");
+  const comboRef = useRef(null);
 
   useEffect(() => {
     const handler = (e) => {
       let key = null;
 
-      // Handle arrows
       if (e.key.startsWith("Arrow")) {
         key = {
           ArrowUp: "↑",
@@ -18,52 +19,85 @@ export default function AdminAccess() {
           ArrowLeft: "←",
           ArrowRight: "→",
         }[e.key];
-      }
-      // Handle letters & numbers
-      else if (/^[a-zA-Z0-9]$/.test(e.key)) {
+      } else if (/^[a-zA-Z0-9]$/.test(e.key)) {
         key = e.key.toUpperCase();
       }
 
       if (!key) return;
 
-      setCombo(prev => [...prev, key]);
-      setDisplay(prev => prev + "• ");
+      setCombo((prev) => [...prev, key]);
+      setDisplay((prev) => prev + "• ");
       e.preventDefault();
     };
 
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    const comboEl = comboRef.current;
+    if (comboEl) comboEl.addEventListener("keydown", handler);
+
+    return () => {
+      if (comboEl) comboEl.removeEventListener("keydown", handler);
+    };
   }, []);
 
   const submit = async () => {
+    if (!organization.trim()) {
+      setMessage("⚠ Organization name required");
+      return;
+    }
+
     const finalCombo = combo.join("");
-    const res = await adminLogin(finalCombo);
+
+    const res = await adminLogin({
+      organization: organization.trim(),
+      combo: finalCombo,
+    });
 
     if (res.success) {
       localStorage.setItem("admin_token", res.token);
+      localStorage.setItem("org_name", res.organization);
       window.location.href = "/admin";
     } else {
-      setMessage("❌ Invalid combo");
-      reset();
+      setMessage("❌ Invalid credentials");
+      reset(false);
     }
   };
 
-  const reset = () => {
+  const reset = (clearOrg = true) => {
     setCombo([]);
     setDisplay("");
     setMessage("");
+    if (clearOrg) setOrganization("");
   };
 
   return (
     <div style={styles.container}>
       <h2 style={styles.title}>SECURE ADMIN ACCESS</h2>
-      <div style={styles.comboBox}>
-        {display || "Press secret keys..."}
+
+      {/* Organization Input */}
+      <input
+        style={styles.input}
+        placeholder="Organization name"
+        value={organization}
+        onChange={(e) => setOrganization(e.target.value)}
+      />
+
+      {/* Combo Display (focusable) */}
+      <div
+        style={styles.comboBox}
+        tabIndex={0}
+        ref={comboRef}
+      >
+        {display || "Click here and press secret keys..."}
       </div>
+
       <div style={{ marginTop: 20 }}>
-        <button onClick={submit} style={styles.button}>UNLOCK</button>
-        <button onClick={reset} style={styles.reset}>RESET</button>
+        <button onClick={submit} style={styles.button}>
+          UNLOCK
+        </button>
+        <button onClick={() => reset()} style={styles.reset}>
+          RESET
+        </button>
       </div>
+
       {message && <p style={styles.error}>{message}</p>}
     </div>
   );
@@ -84,6 +118,17 @@ const styles = {
     marginBottom: 25,
     letterSpacing: 2,
   },
+  input: {
+    width: 320,
+    padding: 10,
+    marginBottom: 15,
+    background: "#000",
+    color: "#0f0",
+    border: "1px solid #0f0",
+    outline: "none",
+    textAlign: "center",
+    fontFamily: "monospace",
+  },
   comboBox: {
     width: 320,
     minHeight: 50,
@@ -92,6 +137,7 @@ const styles = {
     textAlign: "center",
     background: "#050505",
     boxShadow: "0 0 15px #0f0",
+    cursor: "text",
   },
   button: {
     padding: "10px 20px",

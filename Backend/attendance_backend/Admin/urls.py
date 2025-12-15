@@ -3,5 +3,5 @@ from . import views
 
 urlpatterns = [
     # ====================== ADMIN AUTHENTICATION ======================
-    path("admin/login/", views.admin_login),
+    path("login/", views.admin_login, name="admin-login"),
 ]

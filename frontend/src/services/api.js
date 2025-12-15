@@ -99,11 +99,11 @@ export const validateQrSession = async (code) => {
 
 
 // ---------------- ADMIN AUTHENTICATION ----------------
-export const adminLogin = async (combo) => {
+export const adminLogin = async ({organization, combo}) => {
   const res = await fetch(`${API_BASE}/admin/login/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ combo }),
+    body: JSON.stringify({ organization, combo }),
   });
   return res.json();
 };

@@ -8,13 +8,19 @@ import Teachers from "./pages/Teachers/teachers";
 import AttendanceScanner from "./pages/Attendance/AttendanceScanner";
 import AttendanceForm from "./pages/Attendance/AttendanceForm";
 import AttendanceCamera from "./pages/Attendance/AttendanceCamera";
+
 import Analytics from "./pages/Analytics/analytics";
+
+// Admin Pages
 import AdminAccess from "./pages/AdminAccess/AdminAccess";
 import AdminLayout from "./pages/Admin/AdminLayout";
 import AdminGuard from "./pages/Admin/AdminGuard";
 import Dashboard from "./pages/Admin/Dashboard";
 import Organizations from "./pages/Admin/Organizations";
 import Branches from "./pages/Admin/Branches";
+
+import RegisterOrganization from './pages/RegisterOrganization/RegisterOrganization.jsx';
+
 
 import 'bulma/css/bulma.min.css';
 
@@ -29,6 +35,7 @@ createRoot(document.getElementById("root")).render(
         <Route path="/attendance/form" element={<AttendanceForm />} />
         <Route path="/attendance/camera" element={<AttendanceCamera />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/register-org" element={<RegisterOrganization />} />
         <Route path="/admin-access" element={<AdminAccess />} />
         <Route
           path="/admin"
