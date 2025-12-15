@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "attendance",
+    "Admin",
 ]
 
 MIDDLEWARE = [
