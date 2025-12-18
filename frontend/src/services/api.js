@@ -109,13 +109,35 @@ export const adminLogin = async ({organization, combo}) => {
 };
 
 // ---------------- Organizations Apis ----------------
-export const fetchOrganizations = async () => {
-  const res = await fetch(`${API_BASE}/organizations/`, {
+export const getOrganization = async () => {
+  const res = await fetch(`${API_BASE}/admin/organization/`, {
     headers: {
       Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
     },
   });
   return res.json();
+};
+
+export const updateOrganization = async (data) => {
+  await fetch(`${API_BASE}/admin/organization/update/`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(data),
+  });
+};
+
+export const rotateAdminCombo = async (data) => {
+  await fetch(`${API_BASE}/admin/organization/rotate-combo/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(data),
+  });
 };
 
 export const createOrganization = async (data) => {
@@ -130,7 +152,7 @@ export const createOrganization = async (data) => {
 };
 
 export const fetchBranches = async () => {
-  const res = await fetch(`${API_BASE}/branches/`, {
+  const res = await fetch(`${API_BASE}/admin/branches/`, {
     headers: {
       Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
     },
@@ -139,7 +161,7 @@ export const fetchBranches = async () => {
 };
 
 export const createBranch = async (data) => {
-  return fetch(`${API_BASE}/branches/`, {
+  return fetch(`${API_BASE}/admin/branches/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -149,4 +171,22 @@ export const createBranch = async (data) => {
   });
 };
 
+export const updateBranch = async (id, data) => {
+  return fetch(`${API_BASE}/admin/branches/${id}/`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(data),
+  });
+};
 
+export const deleteBranch = async (id) => {
+  return fetch(`${API_BASE}/admin/branches/${id}/`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+  });
+};

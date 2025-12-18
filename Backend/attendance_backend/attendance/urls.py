@@ -36,6 +36,6 @@ urlpatterns = [
     path("analytics/student/<int:student_id>/", views.student_detail_analytics, name="student_detail_analytics"),
     path("analytics/teacher/<int:teacher_id>/", views.teacher_detail_analytics, name="teacher_detail_analytics"),
 
-    # ====================== ORGANIZATION/Branch MANAGEMENT ======================
+    # ====================== ORGANIZATION Registration ======================
     path("register-organization/", org_apis.register_organization, name="register_organization"),
 ]

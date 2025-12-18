@@ -39,25 +39,47 @@ export default function AdminAccess() {
   }, []);
 
   const submit = async () => {
+    setMessage("");
+
     if (!organization.trim()) {
       setMessage("⚠ Organization name required");
       return;
     }
 
-    const finalCombo = combo.join("");
+    if (combo.length === 0) {
+      setMessage("⚠ Enter admin key combo");
+      return;
+    }
 
-    const res = await adminLogin({
-      organization: organization.trim(),
-      combo: finalCombo,
-    });
+    try {
+      const finalCombo = combo.join("");
 
-    if (res.success) {
+      const res = await adminLogin({
+        organization: organization.trim(),
+        combo: finalCombo,
+      });
+
+      // 🔴 Organization not found
+      if (res.error) {
+        setMessage(`❌ ${res.error}`);
+        return;
+      }
+
+      // 🔴 Wrong combo
+      if (!res.success) {
+        setMessage(`❌ ${res.message || "Invalid credentials"}`);
+        reset(false);
+        return;
+      }
+
+      // ✅ Success
       localStorage.setItem("admin_token", res.token);
       localStorage.setItem("org_name", res.organization);
       window.location.href = "/admin";
-    } else {
-      setMessage("❌ Invalid credentials");
-      reset(false);
+
+    } catch (err) {
+      console.error(err);
+      setMessage("❌ Server error. Please try again.");
     }
   };
 

@@ -16,7 +16,7 @@ class Organization(models.Model):
         ("institute", "Institute"),
     ]
 
-    name = models.CharField(max_length=200)
+    name = models.CharField(max_length=200, unique=True)
     org_type = models.CharField(max_length=20, choices=ORG_TYPES)
     website = models.URLField(null=True, blank=True)
 

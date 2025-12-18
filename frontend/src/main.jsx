@@ -21,7 +21,6 @@ import Branches from "./pages/Admin/Branches";
 
 import RegisterOrganization from './pages/RegisterOrganization/RegisterOrganization.jsx';
 
-
 import 'bulma/css/bulma.min.css';
 
 createRoot(document.getElementById("root")).render(
