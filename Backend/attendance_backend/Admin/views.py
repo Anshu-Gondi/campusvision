@@ -4,7 +4,10 @@ from django.http import JsonResponse
 from django.utils.timezone import now
 from django.conf import settings
 from datetime import timedelta
-import hashlib, jwt, json, hmac
+import hashlib
+import jwt
+import json
+import hmac
 from django.core.cache import cache
 from Admin.models import AdminAccessKey
 from attendance.models import Branch, Organization
@@ -86,6 +89,7 @@ def admin_login(request):
         "organization": org.name
     })
 
+
 @admin_required
 @require_http_methods(["GET"])
 def get_organization(request):
@@ -97,6 +101,7 @@ def get_organization(request):
         "website": org.website,
         "created_at": org.created_at,
     })
+
 
 @admin_required
 @require_http_methods(["PUT"])
@@ -118,6 +123,7 @@ def update_organization(request):
     org.save()
 
     return JsonResponse({"success": True})
+
 
 @admin_required
 @require_http_methods(["POST"])
@@ -153,6 +159,7 @@ def rotate_admin_combo(request):
 
     return JsonResponse({"success": True})
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["GET", "POST"])
@@ -162,7 +169,8 @@ def branches_view(request):
 
     # ================= LIST =================
     if request.method == "GET":
-        branches = Branch.objects.filter(organization=organization).order_by("name")
+        branches = Branch.objects.filter(
+            organization=organization).order_by("name")
 
         return JsonResponse([
             {
@@ -176,6 +184,7 @@ def branches_view(request):
                 "pincode": b.pincode,
                 "latitude": b.latitude,
                 "longitude": b.longitude,
+                "attendance_radius": b.attendance_radius,
             }
             for b in branches
         ], safe=False)
@@ -200,12 +209,14 @@ def branches_view(request):
         pincode=body.get("pincode"),
         latitude=body.get("latitude"),
         longitude=body.get("longitude"),
+        attendance_radius=body.get("attendance_radius", 75),
     )
 
     return JsonResponse({
         "success": True,
         "id": branch.id
     }, status=201)
+
 
 @csrf_exempt
 @admin_required
@@ -229,6 +240,7 @@ def branch_detail_view(request, branch_id):
             "pincode": branch.pincode,
             "latitude": branch.latitude,
             "longitude": branch.longitude,
+            "attendance_radius": branch.attendance_radius,
         })
 
     # ================= UPDATE =================
@@ -245,6 +257,9 @@ def branch_detail_view(request, branch_id):
         branch.pincode = body.get("pincode", branch.pincode)
         branch.latitude = body.get("latitude", branch.latitude)
         branch.longitude = body.get("longitude", branch.longitude)
+        branch.attendance_radius = body.get(
+            "attendance_radius", branch.attendance_radius
+        )
 
         branch.save()
 

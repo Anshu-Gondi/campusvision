@@ -39,6 +39,13 @@ class Branch(models.Model):
 
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
+    attendance_radius = models.PositiveIntegerField(
+        default=75,
+        help_text="Radius in meters for attendance"
+    )
+
+    class Meta:
+        unique_together = ("organization", "name")
 
     def __str__(self):
         return f"{self.organization.name} - {self.name}"

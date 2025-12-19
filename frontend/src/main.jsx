@@ -22,6 +22,7 @@ import Branches from "./pages/Admin/Branches";
 import RegisterOrganization from './pages/RegisterOrganization/RegisterOrganization.jsx';
 
 import 'bulma/css/bulma.min.css';
+import "leaflet/dist/leaflet.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>

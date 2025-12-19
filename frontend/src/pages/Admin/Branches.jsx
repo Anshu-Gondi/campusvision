@@ -1,43 +1,71 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import MapPicker from "./Mappicker";
 import {
   fetchBranches,
-  getOrganization,
   createBranch,
   updateBranch,
   deleteBranch,
 } from "../../services/api";
 
+/**
+ * Renovated Admin Branches Page
+ * - Organization name shown once (admin is org-bound)
+ * - Branch list grouped under the organization
+ * - Full CRUD
+ * - Structured location (address, city, state, pincode, lat/long)
+ */
 export default function Branches() {
   const [branches, setBranches] = useState([]);
-  const [orgs, setOrgs] = useState([]);
-  const [organization, setOrganization] = useState("");
-  const [name, setName] = useState("");
-  const [location, setLocation] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const [form, setForm] = useState({
+    name: "",
+    address: "",
+    city: "",
+    state: "",
+    pincode: "",
+    latitude: "",
+    longitude: "",
+    attendance_radius: 75,
+  });
+
   const [editingId, setEditingId] = useState(null);
 
   useEffect(() => {
-    loadData();
+    loadBranches();
   }, []);
 
-  const loadData = async () => {
-    setOrgs(await getOrganization());
-    setBranches(await fetchBranches());
+  const loadBranches = async () => {
+    setLoading(true);
+    const data = await fetchBranches();
+    setBranches(data);
+    setLoading(false);
   };
 
   const resetForm = () => {
-    setOrganization("");
-    setName("");
-    setLocation("");
     setEditingId(null);
+    setForm({
+      name: "",
+      address: "",
+      city: "",
+      state: "",
+      pincode: "",
+      latitude: "",
+      longitude: "",
+    });
   };
 
   const submit = async () => {
-    if (!organization || !name) {
-      alert("Organization and Branch name required");
+    if (!form.name.trim()) {
+      alert("Branch name is required");
       return;
     }
 
-    const payload = { organization, name, location };
+    const payload = {
+      ...form,
+      latitude: form.latitude || null,
+      longitude: form.longitude || null,
+    };
 
     if (editingId) {
       await updateBranch(editingId, payload);
@@ -46,96 +74,206 @@ export default function Branches() {
     }
 
     resetForm();
-    loadData();
+    loadBranches();
   };
 
-  const edit = (b) => {
+  const editBranch = (b) => {
     setEditingId(b.id);
-    setOrganization(b.organization);
-    setName(b.name);
-    setLocation(b.location || "");
+    setForm({
+      name: b.name || "",
+      address: b.address || "",
+      city: b.city || "",
+      state: b.state || "",
+      pincode: b.pincode || "",
+      latitude: b.latitude || "",
+      longitude: b.longitude || "",
+    });
   };
 
-  const remove = async (id) => {
+  const removeBranch = async (id) => {
     if (!window.confirm("Delete this branch?")) return;
     await deleteBranch(id);
-    loadData();
+    loadBranches();
   };
 
-  return (
-    <>
-      <h1 className="title">Branches</h1>
+  const organizationName = useMemo(() => {
+    if (!branches.length) return "";
+    return branches[0].organization_name;
+  }, [branches]);
 
-      {/* Create / Edit */}
-      <div className="box">
+  return (
+    <div className="p-4">
+      <h1 className="title is-4">Organization</h1>
+      <div className="box mb-5">
+        <strong>{organizationName || "Your Organization"}</strong>
+      </div>
+
+      {/* Branch Form */}
+      <div className="box mb-6">
+        <h2 className="subtitle is-6">
+          {editingId ? "Edit Branch" : "Create Branch"}
+        </h2>
+
         <div className="columns is-multiline">
-          <div className="column is-4">
-            <div className="select is-fullwidth">
-              <select value={organization} onChange={(e) => setOrganization(e.target.value)}>
-                <option value="">Select Organization</option>
-                {orgs.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
+          {/* Map Picker */}
+          <div className="column is-12">
+            <div className="box">
+              <p className="mb-2"><strong>Select location on map</strong></p>
+              <MapPicker
+                latitude={form.latitude}
+                longitude={form.longitude}
+                radius={form.attendance_radius}
+                onChange={(data) =>
+                  setForm({
+                    ...form,
+                    latitude: data.latitude,
+                    longitude: data.longitude,
+                    address: data.address || form.address,
+                    city: data.city || form.city,
+                    state: data.state || form.state,
+                    pincode: data.pincode || form.pincode,
+                  })
+                }
+              />
             </div>
           </div>
 
-          <div className="column is-3">
+          <div className="column is-4">
             <input
               className="input"
               placeholder="Branch Name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+          </div>
+
+          <div className="column is-8">
+            <input
+              className="input"
+              placeholder="Address"
+              value={form.address}
+              onChange={(e) => setForm({ ...form, address: e.target.value })}
             />
           </div>
 
           <div className="column is-3">
             <input
               className="input"
-              placeholder="Location"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
+              placeholder="City"
+              value={form.city}
+              onChange={(e) => setForm({ ...form, city: e.target.value })}
             />
           </div>
 
-          <div className="column is-2">
+          <div className="column is-3">
+            <input
+              className="input"
+              placeholder="State"
+              value={form.state}
+              onChange={(e) => setForm({ ...form, state: e.target.value })}
+            />
+          </div>
+
+          <div className="column is-3">
+            <input
+              className="input"
+              placeholder="Pincode"
+              value={form.pincode}
+              onChange={(e) => setForm({ ...form, pincode: e.target.value })}
+            />
+          </div>
+
+          <div className="column is-3">
+            <input
+              className="input"
+              placeholder="Latitude"
+              value={form.latitude}
+              onChange={(e) => setForm({ ...form, latitude: e.target.value })}
+            />
+          </div>
+
+          <div className="column is-3">
+            <input
+              className="input"
+              type="number"
+              min="10"
+              placeholder="Attendance Radius (meters)"
+              value={form.attendance_radius}
+              onChange={(e) =>
+                setForm({ ...form, attendance_radius: e.target.value })
+              }
+            />
+          </div>
+
+          <div className="column is-3">
+            <input
+              className="input"
+              placeholder="Longitude"
+              value={form.longitude}
+              onChange={(e) => setForm({ ...form, longitude: e.target.value })}
+            />
+          </div>
+
+          <div className="column is-3">
             <button className="button is-success is-fullwidth" onClick={submit}>
-              {editingId ? "Update" : "Create"}
+              {editingId ? "Update Branch" : "Create Branch"}
             </button>
           </div>
+
+          {editingId && (
+            <div className="column is-3">
+              <button className="button is-light is-fullwidth" onClick={resetForm}>
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Branch Table */}
-      <table className="table is-fullwidth is-striped">
-        <thead>
-          <tr>
-            <th>Organization</th>
-            <th>Branch</th>
-            <th>Location</th>
-            <th width="180">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {branches.map((b) => (
-            <tr key={b.id}>
-              <td>{b.organization_name}</td>
-              <td>{b.name}</td>
-              <td>{b.location || "—"}</td>
-              <td>
-                <button className="button is-small is-info mr-2" onClick={() => edit(b)}>
-                  Edit
-                </button>
-                <button className="button is-small is-danger" onClick={() => remove(b.id)}>
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </>
+      {/* Branch List */}
+      <div className="box">
+        <h2 className="subtitle is-6">Branches</h2>
+
+        {loading ? (
+          <p>Loading...</p>
+        ) : (
+          <table className="table is-fullwidth is-striped">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>City</th>
+                <th>State</th>
+                <th>Location</th>
+                <th width="160">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {branches.map((b) => (
+                <tr key={b.id}>
+                  <td>{b.name}</td>
+                  <td>{b.city || "—"}</td>
+                  <td>{b.state || "—"}</td>
+                  <td>{b.address || "—"}</td>
+                  <td>
+                    <button
+                      className="button is-small is-info mr-2"
+                      onClick={() => editBranch(b)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="button is-small is-danger"
+                      onClick={() => removeBranch(b.id)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
   );
 }
