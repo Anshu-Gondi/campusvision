@@ -79,30 +79,36 @@ class Student(models.Model):
 
 # ----------------- Teacher -----------------
 class Teacher(models.Model):
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
-    department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
+    department = models.ForeignKey(
+        Department, on_delete=models.SET_NULL, null=True, blank=True
+    )
+
     name = models.CharField(max_length=100)
     employee_id = models.CharField(max_length=20, unique=True)
 
-    # A teacher can teach multiple subjects
-    subjects = models.JSONField(default=list)  # ["Math", "Physics"]
+    email = models.EmailField(null=True, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
 
-    # Can handle multiple class levels
-    can_teach_classes = models.JSONField(default=list)  # ["10-A", "10-B", "9-A"]
+    subjects = models.JSONField(default=list)          # ["Math", "Physics"]
+    can_teach_classes = models.JSONField(default=list) # ["10-A", "9-B"]
 
-    # How reliable the teacher is (based on historical attendance)
     reliability_score = models.FloatField(default=0.8)
-
-    # Used to avoid overloading the same teacher
     workload_score = models.IntegerField(default=0)
 
-    # Optional vector embedding for compatibility search
     embedding_vector = models.JSONField(default=list, blank=True)
 
     image = models.ImageField(upload_to="teachers/", null=True, blank=True)
 
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
     def __str__(self):
         return f"{self.name} ({self.employee_id})"
+
+# ----------------- School Class -----------------
 
 class SchoolClass(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)

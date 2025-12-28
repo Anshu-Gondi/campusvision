@@ -17,6 +17,7 @@ import {
 export default function Branches() {
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [mapLink, setMapLink] = useState("");
 
   const [form, setForm] = useState({
     name: "",
@@ -101,6 +102,60 @@ export default function Branches() {
     return branches[0].organization_name;
   }, [branches]);
 
+  const extractLatLng = (url) => {
+    const atMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (atMatch) return { lat: atMatch[1], lng: atMatch[2] };
+
+    const qMatch = url.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (qMatch) return { lat: qMatch[1], lng: qMatch[2] };
+
+    return null;
+  };
+
+  const handleMapLink = async (url) => {
+    setMapLink(url);
+    const coords = extractLatLng(url);
+    if (!coords) return;
+
+    await reverseGeocodeFromParent(coords.lat, coords.lng);
+  };
+
+  const getCurrentLocation = () => {
+    if (!navigator.geolocation) return;
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        reverseGeocodeFromParent(
+          pos.coords.latitude.toFixed(6),
+          pos.coords.longitude.toFixed(6)
+        );
+      },
+      () => alert("Location permission denied")
+    );
+  };
+
+  const reverseGeocodeFromParent = async (lat, lng) => {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`
+      );
+      const data = await res.json();
+      const addr = data.address || {};
+
+      setForm((prev) => ({
+        ...prev,
+        latitude: lat,
+        longitude: lng,
+        address: addr.road || addr.suburb || addr.neighbourhood || prev.address,
+        city: addr.city || addr.town || addr.village || prev.city,
+        state: addr.state || prev.state,
+        pincode: addr.postcode || prev.pincode,
+      }));
+    } catch (e) {
+      console.error("Reverse geocode failed", e);
+    }
+  };
+
   return (
     <div className="p-4">
       <h1 className="title is-4">Organization</h1>
@@ -115,10 +170,28 @@ export default function Branches() {
         </h2>
 
         <div className="columns is-multiline">
+          <div className="column is-12">
+            <button
+              className="button is-link mb-2"
+              onClick={getCurrentLocation}
+            >
+              📍 Use my current location
+            </button>
+
+            <input
+              className="input"
+              placeholder="Paste Google Maps link"
+              value={mapLink}
+              onChange={(e) => handleMapLink(e.target.value)}
+            />
+          </div>
+
           {/* Map Picker */}
           <div className="column is-12">
             <div className="box">
-              <p className="mb-2"><strong>Select location on map</strong></p>
+              <p className="mb-2">
+                <strong>Select location on map</strong>
+              </p>
               <MapPicker
                 latitude={form.latitude}
                 longitude={form.longitude}
@@ -222,7 +295,10 @@ export default function Branches() {
 
           {editingId && (
             <div className="column is-3">
-              <button className="button is-light is-fullwidth" onClick={resetForm}>
+              <button
+                className="button is-light is-fullwidth"
+                onClick={resetForm}
+              >
                 Cancel
               </button>
             </div>

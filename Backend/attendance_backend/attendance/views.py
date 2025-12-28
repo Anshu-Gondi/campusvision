@@ -196,7 +196,6 @@ def delete_teacher(request, employee_id):
     except Teacher.DoesNotExist:
         return Response({"error": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
 
-
 # ----------------- QR CODE SESSION -----------------
 
 

@@ -10,7 +10,7 @@ import json
 import hmac
 from django.core.cache import cache
 from Admin.models import AdminAccessKey
-from attendance.models import Branch, Organization
+from attendance.models import Branch, Organization, Teacher
 from .utils import admin_required
 
 SECRET = settings.ADMIN_JWT_SECRET
@@ -28,7 +28,7 @@ def is_rate_limited(ip, org_id):
     cache.set(key, attempts + 1, timeout=300)
     return False
 
-
+# Admin Auth Views
 @csrf_exempt
 def admin_login(request):
     if request.method != "POST":
@@ -89,6 +89,7 @@ def admin_login(request):
         "organization": org.name
     })
 
+# Organization Views
 
 @admin_required
 @require_http_methods(["GET"])
@@ -159,6 +160,8 @@ def rotate_admin_combo(request):
 
     return JsonResponse({"success": True})
 
+
+# Branch Views
 
 @csrf_exempt
 @admin_required
@@ -267,4 +270,110 @@ def branch_detail_view(request, branch_id):
 
     # ================= DELETE =================
     branch.delete()
+    return JsonResponse({"success": True})
+
+# Teacher Views
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["GET", "POST"])
+def teachers_view(request):
+    org_id = request.admin["org_id"]
+
+    # ================= LIST =================
+    if request.method == "GET":
+        teachers = Teacher.objects.filter(
+            branch__organization_id=org_id
+        ).select_related("branch", "department")
+
+        return JsonResponse([
+            {
+                "id": t.id,
+                "name": t.name,
+                "employee_id": t.employee_id,
+                "branch": t.branch.id,
+                "branch_name": t.branch.name,
+                "department": t.department.name if t.department else None,
+                "subjects": t.subjects,
+                "can_teach_classes": t.can_teach_classes,
+                "reliability_score": t.reliability_score,
+            }
+            for t in teachers
+        ], safe=False)
+
+    # ================= CREATE =================
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    name = body.get("name", "").strip()
+    employee_id = body.get("employee_id", "").strip()
+    branch_id = body.get("branch")
+
+    if not all([name, employee_id, branch_id]):
+        return JsonResponse({"error": "Missing required fields"}, status=400)
+
+    try:
+        branch = Branch.objects.get(
+            id=branch_id,
+            organization_id=org_id
+        )
+    except Branch.DoesNotExist:
+        return JsonResponse({"error": "Invalid branch"}, status=403)
+
+    teacher = Teacher.objects.create(
+        name=name,
+        employee_id=employee_id,
+        branch=branch,
+        department_id=body.get("department"),
+        subjects=body.get("subjects", []),
+        can_teach_classes=body.get("can_teach_classes", []),
+    )
+
+    return JsonResponse({"success": True, "id": teacher.id}, status=201)
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["GET", "PUT", "DELETE"])
+def teacher_detail_view(request, teacher_id):
+    org_id = request.admin["org_id"]
+
+    try:
+        teacher = Teacher.objects.select_related("branch").get(
+            id=teacher_id,
+            branch__organization_id=org_id
+        )
+    except Teacher.DoesNotExist:
+        return JsonResponse({"error": "Teacher not found"}, status=404)
+
+    # ================= READ =================
+    if request.method == "GET":
+        return JsonResponse({
+            "id": teacher.id,
+            "name": teacher.name,
+            "employee_id": teacher.employee_id,
+            "branch": teacher.branch.id,
+            "department": teacher.department_id,
+            "subjects": teacher.subjects,
+            "can_teach_classes": teacher.can_teach_classes,
+            "reliability_score": teacher.reliability_score,
+            "workload_score": teacher.workload_score,
+        })
+
+    # ================= UPDATE =================
+    if request.method == "PUT":
+        body = json.loads(request.body)
+
+        teacher.name = body.get("name", teacher.name)
+        teacher.subjects = body.get("subjects", teacher.subjects)
+        teacher.can_teach_classes = body.get("can_teach_classes", teacher.can_teach_classes)
+        teacher.reliability_score = body.get("reliability_score", teacher.reliability_score)
+        teacher.workload_score = body.get("workload_score", teacher.workload_score)
+
+        teacher.save()
+        return JsonResponse({"success": True})
+
+    # ================= DELETE =================
+    teacher.delete()
     return JsonResponse({"success": True})
