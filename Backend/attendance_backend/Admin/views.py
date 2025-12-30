@@ -10,7 +10,7 @@ import json
 import hmac
 from django.core.cache import cache
 from Admin.models import AdminAccessKey
-from attendance.models import Branch, Organization, Teacher
+from attendance.models import Attendance, Branch, Organization, Student, Teacher
 from .utils import admin_required
 
 SECRET = settings.ADMIN_JWT_SECRET
@@ -325,6 +325,7 @@ def teachers_view(request):
     teacher = Teacher.objects.create(
         name=name,
         employee_id=employee_id,
+        organization=branch.organization,
         branch=branch,
         department_id=body.get("department"),
         subjects=body.get("subjects", []),
@@ -376,4 +377,205 @@ def teacher_detail_view(request, teacher_id):
 
     # ================= DELETE =================
     teacher.delete()
+    return JsonResponse({"success": True})
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["POST"])
+def admin_upload_teacher_image(request, teacher_id):
+    org_id = request.admin["org_id"]
+
+    try:
+        teacher = Teacher.objects.get(
+            id=teacher_id,
+            branch__organization_id=org_id
+        )
+    except Teacher.DoesNotExist:
+        return JsonResponse({"error": "Teacher not found"}, status=404)
+
+    if "image" not in request.FILES:
+        return JsonResponse({"error": "Image required"}, status=400)
+
+    teacher.image = request.FILES["image"]
+    teacher.save()
+
+    return JsonResponse({
+        "success": True,
+        "image": teacher.image.url
+    })
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["DELETE"])
+def admin_delete_teacher_image(request, teacher_id):
+    org_id = request.admin["org_id"]
+
+    try:
+        teacher = Teacher.objects.get(
+            id=teacher_id,
+            branch__organization_id=org_id
+        )
+    except Teacher.DoesNotExist:
+        return JsonResponse({"error": "Teacher not found"}, status=404)
+
+    if teacher.image:
+        teacher.image.delete(save=False)
+        teacher.image = None
+        teacher.save()
+
+    return JsonResponse({"success": True})
+
+# Students Views
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["GET", "POST"])
+def students_view(request):
+    org_id = request.admin["org_id"]
+
+    # ================= LIST =================
+    if request.method == "GET":
+        students = Student.objects.filter(
+            branch__organization_id=org_id
+        ).select_related("branch", "department")
+
+        return JsonResponse([
+            {
+                "id": s.id,
+                "name": s.name,
+                "roll_no": s.roll_no,
+                "class_name": s.class_name,
+                "section": s.section,
+                "branch": s.branch.id,
+                "branch_name": s.branch.name,
+                "department": s.department.name if s.department else None,
+                "image": s.image.url if s.image else None,
+            }
+            for s in students
+        ], safe=False)
+
+    # ================= CREATE =================
+    try:
+        body = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    required = ["name", "roll_no", "class_name", "section", "branch"]
+    if not all(body.get(k) for k in required):
+        return JsonResponse({"error": "Missing required fields"}, status=400)
+
+    try:
+        branch = Branch.objects.get(
+            id=body["branch"],
+            organization_id=org_id
+        )
+    except Branch.DoesNotExist:
+        return JsonResponse({"error": "Invalid branch"}, status=403)
+
+    student = Student.objects.create(
+        name=body["name"].strip(),
+        roll_no=body["roll_no"].strip(),
+        class_name=body["class_name"],
+        section=body["section"],
+        branch=branch,
+        department_id=body.get("department"),
+    )
+
+    return JsonResponse(
+        {"success": True, "id": student.id},
+        status=201
+    )
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["GET", "PUT", "DELETE"])
+def student_detail_view(request, student_id):
+    org_id = request.admin["org_id"]
+
+    try:
+        student = Student.objects.select_related("branch").get(
+            id=student_id,
+            branch__organization_id=org_id
+        )
+    except Student.DoesNotExist:
+        return JsonResponse({"error": "Student not found"}, status=404)
+
+    # ================= READ =================
+    if request.method == "GET":
+        return JsonResponse({
+            "id": student.id,
+            "name": student.name,
+            "roll_no": student.roll_no,
+            "class_name": student.class_name,
+            "section": student.section,
+            "branch": student.branch.id,
+            "department": student.department_id,
+            "image": student.image.url if student.image else None,
+        })
+
+    # ================= UPDATE =================
+    if request.method == "PUT":
+        body = json.loads(request.body)
+
+        student.name = body.get("name", student.name)
+        student.class_name = body.get("class_name", student.class_name)
+        student.section = body.get("section", student.section)
+        student.department_id = body.get("department", student.department_id)
+
+        student.save()
+        return JsonResponse({"success": True})
+
+    # ================= DELETE =================
+    Attendance.objects.filter(student=student).delete()
+
+    if student.image:
+        student.image.delete(save=False)
+
+    student.delete()
+    return JsonResponse({"success": True})
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["POST"])
+def admin_upload_student_image(request, student_id):
+    org_id = request.admin["org_id"]
+
+    try:
+        student = Student.objects.get(
+            id=student_id,
+            branch__organization_id=org_id
+        )
+    except Student.DoesNotExist:
+        return JsonResponse({"error": "Student not found"}, status=404)
+
+    if "image" not in request.FILES:
+        return JsonResponse({"error": "Image required"}, status=400)
+
+    student.image = request.FILES["image"]
+    student.save()
+
+    return JsonResponse({
+        "success": True,
+        "image": student.image.url
+    })
+
+@csrf_exempt
+@admin_required
+@require_http_methods(["DELETE"])
+def admin_delete_student_image(request, student_id):
+    org_id = request.admin["org_id"]
+
+    try:
+        student = Student.objects.get(
+            id=student_id,
+            branch__organization_id=org_id
+        )
+    except Student.DoesNotExist:
+        return JsonResponse({"error": "Student not found"}, status=404)
+
+    if student.image:
+        student.image.delete(save=False)
+        student.image = None
+        student.save()
+
     return JsonResponse({"success": True})

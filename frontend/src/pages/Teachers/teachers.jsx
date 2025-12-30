@@ -3,166 +3,214 @@ import {
   fetchTeachers,
   createTeacher,
   updateTeacherImage,
-  deleteTeacher,
-  deleteTeacherFull,   // 🆕 import full delete
+  deleteTeacherImage,
+  deleteTeacherFull,
+  fetchBranches,
 } from "../../services/api";
 
 export default function Teachers() {
   const [teachers, setTeachers] = useState([]);
+  const [branches, setBranches] = useState([]);
+
   const [form, setForm] = useState({
     name: "",
     employee_id: "",
-    subject: "",
-    class_name: "",
-    section: "",
+    branch: "",
+    department: "",
+    subjects: "",
+    can_teach_classes: "",
     image: null,
   });
-  const [loading, setLoading] = useState(false);
 
-  const loadTeachers = async () => {
-    setLoading(true);
-    const data = await fetchTeachers();
-    setTeachers(data);
-    setLoading(false);
+  const load = async () => {
+    setTeachers(await fetchTeachers());
+    setBranches(await fetchBranches());
   };
 
-  useEffect(() => {
-    loadTeachers();
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  const handleChange = (e) => {
-    const { name, value, files } = e.target;
-    setForm({ ...form, [name]: files ? files[0] : value });
-  };
-
-  const handleSubmit = async (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    const formData = new FormData();
-    for (const key in form) formData.append(key, form[key]);
-    await createTeacher(formData);
+
+    // 1️⃣ Create teacher (JSON)
+    const res = await createTeacher({
+      name: form.name,
+      employee_id: form.employee_id,
+      branch: Number(form.branch),
+      department: form.department || null,
+      subjects: form.subjects.split(",").map(s => s.trim()),
+      can_teach_classes: form.can_teach_classes.split(",").map(c => c.trim()),
+    });
+
+    // 2️⃣ Upload image if selected
+    if (form.image && res?.id) {
+      const fd = new FormData();
+      fd.append("image", form.image);
+      await updateTeacherImage(res.id, fd);
+    }
+
     setForm({
       name: "",
       employee_id: "",
-      subject: "",
-      class_name: "",
-      section: "",
+      branch: "",
+      department: "",
+      subjects: "",
+      can_teach_classes: "",
       image: null,
     });
-    loadTeachers();
+
+    load();
   };
 
-  const handleImageUpdate = async (teacherId, file) => {
-    const formData = new FormData();
-    formData.append("image", file);
-    await updateTeacherImage(teacherId, formData);
-    loadTeachers();
-  };
-
-  // 🟢 Old: delete only image
-  const handleDeleteImage = async (employeeId) => {
-    await deleteTeacher(employeeId);
-    loadTeachers();
-  };
-
-  // 🆕 New: full delete (teacher + attendance + image)
-  const handleDeleteFull = async (employeeId) => {
-    if (window.confirm("This will permanently delete teacher, image, and attendance records. Continue?")) {
-      await deleteTeacherFull(employeeId);
-      loadTeachers();
-    }
+  const uploadImage = async (id, file) => {
+    const fd = new FormData();
+    fd.append("image", file);
+    await updateTeacherImage(id, fd);
+    load();
   };
 
   return (
     <div className="container">
-      <h1 className="title has-text-light">Teachers Management</h1>
+      <h1 className="title">Admin · Teachers</h1>
 
-      <form onSubmit={handleSubmit} className="box">
-        <div className="field">
-          <label className="label">Name</label>
-          <input className="input" name="name" value={form.name} onChange={handleChange} required />
+      {/* CREATE TEACHER */}
+      <form onSubmit={submit} className="box">
+        <p className="has-text-grey mb-3">
+          Fill teacher details. Fields marked * are required.
+        </p>
+
+        <input
+          className="input mb-2"
+          placeholder="Name * (e.g. Ankit Sharma)"
+          value={form.name}
+          required
+          onChange={e => setForm({ ...form, name: e.target.value })}
+        />
+
+        <input
+          className="input mb-2"
+          placeholder="Employee ID * (e.g. EMP1023)"
+          value={form.employee_id}
+          required
+          onChange={e => setForm({ ...form, employee_id: e.target.value })}
+        />
+
+        <div className="select is-fullwidth mb-2">
+          <select
+            required
+            value={form.branch}
+            onChange={e => setForm({ ...form, branch: e.target.value })}
+          >
+            <option value="">Select Branch *</option>
+            {branches.map(b => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
         </div>
-        <div className="field">
-          <label className="label">Employee ID</label>
-          <input className="input" name="employee_id" value={form.employee_id} onChange={handleChange} required />
+
+        <input
+          className="input mb-2"
+          placeholder="Department ID (optional, e.g. 3)"
+          value={form.department}
+          onChange={e => setForm({ ...form, department: e.target.value })}
+        />
+
+        <input
+          className="input mb-2"
+          placeholder="Subjects (comma separated) e.g. Math, Physics"
+          value={form.subjects}
+          onChange={e => setForm({ ...form, subjects: e.target.value })}
+        />
+
+        <input
+          className="input mb-2"
+          placeholder="Classes (comma separated) e.g. 10A, 10B, 11C"
+          value={form.can_teach_classes}
+          onChange={e => setForm({ ...form, can_teach_classes: e.target.value })}
+        />
+
+        {/* IMAGE UPLOAD */}
+        <div className="file mb-3">
+          <label className="file-label">
+            <input
+              className="file-input"
+              type="file"
+              accept="image/*"
+              onChange={e => setForm({ ...form, image: e.target.files[0] })}
+            />
+            <span className="file-cta">
+              <span className="file-label">
+                Upload Teacher Photo (optional)
+              </span>
+            </span>
+          </label>
         </div>
-        <div className="field">
-          <label className="label">Subject</label>
-          <input className="input" name="subject" value={form.subject} onChange={handleChange} required />
-        </div>
-        <div className="field">
-          <label className="label">Class</label>
-          <input className="input" name="class_name" value={form.class_name} onChange={handleChange} required />
-        </div>
-        <div className="field">
-          <label className="label">Section</label>
-          <input className="input" name="section" value={form.section} onChange={handleChange} required />
-        </div>
-        <div className="field">
-          <label className="label">Image</label>
-          <input className="input" type="file" name="image" onChange={handleChange} />
-        </div>
-        <button className="button is-success mt-3" type="submit">Add Teacher</button>
+
+        <button className="button is-success is-fullwidth">
+          Create Teacher
+        </button>
       </form>
 
-      <h2 className="subtitle mt-5">Teacher Records</h2>
-      {loading ? (
-        <p>Loading...</p>
-      ) : (
-        <table className="table is-fullwidth is-striped is-hoverable">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Employee ID</th>
-              <th>Subject</th>
-              <th>Class</th>
-              <th>Section</th>
-              <th>Image</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {teachers.map((teacher) => (
-              <tr key={teacher.id}>
-                <td>{teacher.name}</td>
-                <td>{teacher.employee_id}</td>
-                <td>{teacher.subject}</td>
-                <td>{teacher.class_name}</td>
-                <td>{teacher.section}</td>
-                <td>
-                  {teacher.image_url ? (
-                    <img
-                      src={teacher.image_url}
-                      alt={teacher.name}
-                      style={{ width: "50px" }}
-                    />
-                  ) : (
-                    "No image"
-                  )}
-                  <input
-                    type="file"
-                    onChange={(e) => handleImageUpdate(teacher.id, e.target.files[0])}
-                    className="mt-1"
+      {/* LIST TEACHERS */}
+      <table className="table is-fullwidth is-striped">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Employee</th>
+            <th>Branch</th>
+            <th>Subjects</th>
+            <th>Classes</th>
+            <th>Image</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {teachers.map(t => (
+            <tr key={t.id}>
+              <td>{t.name}</td>
+              <td>{t.employee_id}</td>
+              <td>{t.branch_name}</td>
+              <td>{t.subjects?.join(", ")}</td>
+              <td>{t.can_teach_classes?.join(", ")}</td>
+
+              <td>
+                {t.image && (
+                  <img
+                    src={t.image}
+                    alt="teacher"
+                    width="40"
+                    style={{ borderRadius: "6px" }}
                   />
-                </td>
-                <td>
-                  <button
-                    className="button is-warning is-small mr-2"
-                    onClick={() => handleDeleteImage(teacher.employee_id)}
-                  >
-                    Delete Image
-                  </button>
-                  <button
-                    className="button is-danger is-small"
-                    onClick={() => handleDeleteFull(teacher.employee_id)}
-                  >
-                    Full Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+                )}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={e => uploadImage(t.id, e.target.files[0])}
+                />
+              </td>
+
+              <td>
+                <button
+                  className="button is-warning is-small mr-2"
+                  onClick={() => deleteTeacherImage(t.id)}
+                >
+                  Delete Image
+                </button>
+
+                <button
+                  className="button is-danger is-small"
+                  onClick={() => deleteTeacherFull(t.id)}
+                >
+                  Full Delete
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

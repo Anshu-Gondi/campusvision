@@ -13,7 +13,7 @@ function App() {
       {/* Navbar */}
       <nav className="navbar is-dark" role="navigation" aria-label="main navigation">
         <div className="navbar-brand">
-          <Link className="navbar-item" to="/">Attendance System</Link>
+          <Link className="navbar-item" to="/">CampusVision</Link>
         </div>
         <div className="navbar-menu">
           <div className="navbar-start">

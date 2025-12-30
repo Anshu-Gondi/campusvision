@@ -29,8 +29,6 @@ createRoot(document.getElementById("root")).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />} />
-        <Route path="/students" element={<Students />} />
-        <Route path="/teachers" element={<Teachers />} />
         <Route path="/attendance/scan" element={<AttendanceScanner />} />
         <Route path="/attendance/form" element={<AttendanceForm />} />
         <Route path="/attendance/camera" element={<AttendanceCamera />} />
@@ -48,6 +46,8 @@ createRoot(document.getElementById("root")).render(
           <Route index element={<Dashboard />} />
           <Route path="orgs" element={<Organizations />} />
           <Route path="branches" element={<Branches />} />
+          <Route path="students" element={<Students />} />
+          <Route path="teachers" element={<Teachers />} />
         </Route>
       </Routes>
     </BrowserRouter>

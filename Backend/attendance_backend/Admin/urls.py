@@ -19,4 +19,12 @@ urlpatterns = [
     # ================= TEACHERS =================
     path("teachers/", views.teachers_view),
     path("teachers/<int:teacher_id>/", views.teacher_detail_view),
+    path("teachers/<int:teacher_id>/image/", views.admin_upload_teacher_image),
+    path("teachers/<int:teacher_id>/image/delete/", views.admin_delete_teacher_image),
+
+    # ================ STUDENTS =================
+    path("students/", views.students_view),
+    path("students/<int:student_id>/", views.student_detail_view),
+    path("students/<int:student_id>/image/", views.admin_upload_student_image),
+    path("students/<int:student_id>/image/delete/", views.admin_delete_student_image),
 ]

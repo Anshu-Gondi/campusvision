@@ -1,78 +1,126 @@
 const API_BASE = import.meta.env.VITE_API_KEY;
 
-// ---------------- STUDENTS ----------------
+// ================= ADMIN STUDENTS =================
+
 export const fetchStudents = async () => {
-  const res = await fetch(`${API_BASE}/students/`);
+  const res = await fetch(`${API_BASE}/admin/students/`, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+  });
   return res.json();
 };
 
 export const createStudent = async (formData) => {
-  const res = await fetch(`${API_BASE}/register/student/`, {
+  const res = await fetch(`${API_BASE}/admin/students/`, {
     method: "POST",
-    body: formData,
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(formData),
   });
   return res.json();
 };
 
 export const updateStudentImage = async (studentId, formData) => {
-  const res = await fetch(`${API_BASE}/upload/student/${studentId}/`, {
-    method: "POST",
-    body: formData,
-  });
+  const res = await fetch(
+    `${API_BASE}/admin/students/${studentId}/image/`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+      },
+      body: formData,
+    }
+  );
   return res.json();
 };
 
-// 🟢 Old (image-only delete)
-export const deleteStudent = async (rollNo) => {
-  const res = await fetch(`${API_BASE}/delete/student/image/${rollNo}/`, {
-    method: "DELETE",
-  });
+export const deleteStudentImage = async (studentId) => {
+  const res = await fetch(
+    `${API_BASE}/admin/students/${studentId}/image/delete/`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+      },
+    }
+  );
   return res.json();
 };
 
-// 🆕 New (full delete: student + attendance + image)
-export const deleteStudentFull = async (rollNo) => {
-  const res = await fetch(`${API_BASE}/delete/student/${rollNo}/`, {
-    method: "DELETE",
-  });
+export const deleteStudentFull = async (studentId) => {
+  const res = await fetch(
+    `${API_BASE}/admin/students/${studentId}/`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+      },
+    }
+  );
   return res.json();
 };
 
-// ---------------- TEACHERS ----------------
+// ================= ADMIN TEACHERS =================
+
 export const fetchTeachers = async () => {
-  const res = await fetch(`${API_BASE}/teachers/`);
+  const res = await fetch(`${API_BASE}/admin/teachers/`, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+  });
   return res.json();
 };
 
 export const createTeacher = async (formData) => {
-  const res = await fetch(`${API_BASE}/register/teacher/`, {
+  const res = await fetch(`${API_BASE}/admin/teachers/`, {
     method: "POST",
-    body: formData,
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+    },
+    body: JSON.stringify(formData),
   });
   return res.json();
 };
 
 export const updateTeacherImage = async (teacherId, formData) => {
-  const res = await fetch(`${API_BASE}/upload/teacher/${teacherId}/`, {
-    method: "POST",
-    body: formData,
-  });
+  const res = await fetch(
+    `${API_BASE}/admin/teachers/${teacherId}/image/`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+      },
+      body: JSON.stringify(formData),
+    }
+  );
   return res.json();
 };
 
-// 🟢 Old (image-only delete)
-export const deleteTeacher = async (employeeId) => {
-  const res = await fetch(`${API_BASE}/delete/teacher/image/${employeeId}/`, {
-    method: "DELETE",
-  });
+export const deleteTeacherImage = async (teacherId) => {
+  const res = await fetch(
+    `${API_BASE}/admin/teachers/${teacherId}/image/delete/`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+      },
+    }
+  );
   return res.json();
 };
 
-// 🆕 New (full delete: teacher + attendance + image)
-export const deleteTeacherFull = async (employeeId) => {
-  const res = await fetch(`${API_BASE}/delete/teacher/${employeeId}/`, {
-    method: "DELETE",
-  });
+export const deleteTeacherFull = async (teacherId) => {
+  const res = await fetch(
+    `${API_BASE}/admin/teachers/${teacherId}/`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
+      },
+    }
+  );
   return res.json();
 };
 
