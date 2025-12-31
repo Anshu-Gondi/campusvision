@@ -1,4 +1,4 @@
-use crate::hnsw_helper::{count_by_role, get_metadata, search_in_role};
+use crate::hnsw_helper::{get_metadata, search_in_role};
 use chrono::NaiveTime;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -326,7 +326,7 @@ impl GraphScheduler {
         };
         let mut beam = vec![initial];
 
-        for (idx, class) in ordered.iter().enumerate() {
+        for (_idx, class) in ordered.iter().enumerate() {
             let mut next_beam: Vec<BeamState> = Vec::new();
 
             for state in beam.into_iter() {

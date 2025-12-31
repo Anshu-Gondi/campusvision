@@ -75,7 +75,7 @@ fn add_person(embedding: Vec<f32>, name: String, roll_no: String, role: String) 
     if !["student", "teacher"].contains(&role.as_str()) {
         return Err(PyValueError::new_err("role must be 'student' or 'teacher'"));
     }
-    hnsw_helper::add_embedding(embedding, name, roll_no, role)
+    hnsw_helper::add_face_embedding(embedding, name, roll_no, role)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
@@ -176,7 +176,7 @@ fn detect_and_embed(image_bytes: Vec<u8>) -> PyResult<PyObject> {
 // ── FIXED add_to_index (was returning wrong type before) ─────────────────
 #[pyfunction]
 fn add_to_index(embedding: Vec<f32>) -> PyResult<()> {
-    hnsw_helper::add_embedding(
+    hnsw_helper::add_face_embedding(
         embedding,
         "Unknown".to_string(),
         "NA".to_string(),
@@ -251,16 +251,11 @@ fn cctv_process_frame(
                 landmarks.push(Point2f::new(*px, *py));
             }
 
-            let tensor = any!(preprocess::preprocess_from_mat_and_landmarks(
+            let face_tensor = any!(preprocess::preprocess_from_mat_and_landmarks(
                 &mat, bbox, &landmarks
             ));
-            let embedding = match tch_model::run_face_model(&tensor) {
-                Ok(v) => v,
-                Err(_) => ort_model::run_face_model_onnx(&tensor)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?,
-            };
 
-            detections.push((bbox, landmarks, embedding));
+            detections.push((bbox, landmarks, face_tensor));
         }
 
         let tracker_mutex = if role == "teacher" {

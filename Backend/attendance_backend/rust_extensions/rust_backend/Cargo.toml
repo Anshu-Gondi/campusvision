@@ -37,6 +37,9 @@ hnsw_rs = "0.3"
 
 bincode = "1.3.3"
 
+# Parallelism
+rayon = "1.11"
+
 [profile.dev]
 incremental = true
 
