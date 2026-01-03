@@ -7,12 +7,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::RwLock;
+use crate::utils::cosine_similarity;
 
 /// Metadata stored for each face
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FaceMetadata {
     pub id: String,
     pub name: String,
+    pub person_id: u64,
     pub roll_no: String,
     pub role: String, // e.g., "student", "teacher"
     pub reliability: Option<f32>,
@@ -39,6 +41,7 @@ static EMBEDDINGS: Lazy<RwLock<HashMap<usize, Vec<f32>>>> =
 pub fn add_face_embedding(
     embedding: Vec<f32>,
     name: String,
+    person_id: u64,
     roll_no: String,
     role: String,
 ) -> Result<usize> {
@@ -71,6 +74,7 @@ pub fn add_face_embedding(
             FaceMetadata {
                 id: id.to_string(),
                 name,
+                person_id,
                 roll_no,
                 role,
                 reliability: None,
@@ -85,6 +89,45 @@ pub fn add_face_embedding(
     }
 
     Ok(id)
+}
+
+fn get_embeddings_for_person(
+    person_id: u64,
+    role: &str,
+) -> Result<Vec<Vec<f32>>, String> {
+    let meta = METADATA.read().unwrap();
+    let embs = EMBEDDINGS.read().unwrap();
+
+    let mut result = Vec::new();
+
+    for (id, m) in meta.iter() {
+        if m.role == role && m.id.parse::<u64>().ok() == Some(person_id) {
+            if let Some(e) = embs.get(id) {
+                result.push(e.clone());
+            }
+        }
+    }
+
+    if result.is_empty() {
+        return Err("No existing embeddings found for person".into());
+    }
+
+    Ok(result)
+}
+
+pub fn can_reenroll(
+    embedding: &Vec<f32>,
+    person_id: u64,
+    role: &str,
+) -> Result<bool, String> {
+    let embeddings = get_embeddings_for_person(person_id, role)?;
+
+    let max_sim = embeddings
+        .iter()
+        .map(|e| cosine_similarity(e, embedding))
+        .fold(0.0, f32::max);
+
+    Ok(max_sim >= 0.65)
 }
 
 /// Search only within student or teacher index based on role

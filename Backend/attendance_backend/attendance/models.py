@@ -224,6 +224,77 @@ class CameraMatch(models.Model):
     camera = models.ForeignKey(Camera, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(auto_now_add=True)
     similarity = models.FloatField()
+    
+
+import uuid
+from django.db import models
+
+
+class FaceImage(models.Model):
+    PERSON_TYPE_CHOICES = [
+        ("student", "Student"),
+        ("teacher", "Teacher"),
+    ]
+
+    SOURCE_CHOICES = [
+        ("enroll", "Enrollment"),
+        ("cctv", "CCTV"),
+        ("manual", "Manual Upload"),
+    ]
+
+    # ----------------- Identity -----------------
+    person_type = models.CharField(
+        max_length=10,
+        choices=PERSON_TYPE_CHOICES
+    )
+
+    # roll_no for student | employee_id for teacher
+    person_id = models.CharField(
+        max_length=50,
+        db_index=True
+    )
+
+    # ----------------- Image Storage -----------------
+    image = models.ImageField(
+        upload_to="faces/%Y/%m/%d/",
+        help_text="Stored in object storage (S3 / MinIO / local dev)"
+    )
+
+    # ----------------- Rust HNSW Link -----------------
+    embedding_id = models.BigIntegerField(
+        help_text="Vector ID returned by Rust HNSW index",
+        unique=True
+    )
+
+    embedding_version = models.CharField(
+        max_length=20,
+        default="v1",
+        help_text="Model / embedding version used"
+    )
+
+    # ----------------- Metadata -----------------
+    source = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default="enroll"
+    )
+
+    immutable = models.BooleanField(
+        default=True,
+        help_text="If true, image should not be deleted or replaced"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["person_type", "person_id"]),
+            models.Index(fields=["created_at"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.person_type}:{self.person_id} | emb={self.embedding_id}"
 
 # Delete old image file on update
 @receiver(pre_save, sender=Student)

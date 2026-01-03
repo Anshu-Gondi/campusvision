@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "django_extensions",
+    "storages",
     "attendance",
     "Admin",
 ]
@@ -122,6 +123,31 @@ DATABASES = {
     "default": dj_database_url.parse(config("DATABASE_URL"), conn_max_age=600)
 }
 
+# ================== MINIO STORAGE ==================
+
+DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+
+AWS_ACCESS_KEY_ID = config("MINIO_ACCESS_KEY", default="minioadmin")
+AWS_SECRET_ACCESS_KEY = config("MINIO_SECRET_KEY", default="minioadmin")
+
+AWS_STORAGE_BUCKET_NAME = config(
+    "MINIO_BUCKET_NAME", default="attendance-media"
+)
+
+AWS_S3_ENDPOINT_URL = config(
+    "MINIO_ENDPOINT", default="http://localhost:9000"
+)
+
+AWS_S3_REGION_NAME = "us-east-1"
+AWS_S3_ADDRESSING_STYLE = "path"
+
+AWS_QUERYSTRING_AUTH = False
+AWS_DEFAULT_ACL = None
+
+MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
+
+# ===================================================
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -146,8 +172,6 @@ USE_TZ = True
 
 # Static & Media
 STATIC_URL = 'static/'
-MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -157,11 +181,4 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 FACE_DATABASE_PATH = BASE_DIR / "face_database"
 FACE_DATABASE_PATH.mkdir(exist_ok=True)  # Create if not exists
 
-# Load Rust backend on Django startup
-try:
-    from rust_backend import load_database
-    load_database(str(FACE_DATABASE_PATH))
-    print(f"Rust face database loaded from: {FACE_DATABASE_PATH}")
-except Exception as e:
-    print(f"Warning: Rust backend not loaded (first run?): {e}")
-# ===============================================================
+# =============================================================

@@ -3,15 +3,18 @@ from django.views.decorators.http import require_http_methods
 from django.http import JsonResponse
 from django.utils.timezone import now
 from django.conf import settings
+from django.core.files.base import ContentFile
 from datetime import timedelta
 import hashlib
 import jwt
 import json
 import hmac
 from django.core.cache import cache
+import rust_backend
 from Admin.models import AdminAccessKey
 from attendance.models import Attendance, Branch, Organization, Student, Teacher
-from .utils import admin_required
+from .utils import admin_required, process_face_upload
+from attendance.utils.minio import presigned_url
 
 SECRET = settings.ADMIN_JWT_SECRET
 
@@ -396,12 +399,29 @@ def admin_upload_teacher_image(request, teacher_id):
     if "image" not in request.FILES:
         return JsonResponse({"error": "Image required"}, status=400)
 
-    teacher.image = request.FILES["image"]
+    file = request.FILES["image"]
+
+    try:
+        embedding, image_bytes = process_face_upload(file, "teacher")
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+    # Save image ONLY after validation
+    teacher.image.save(file.name, ContentFile(image_bytes))
+
+    # Register embedding
+    rust_backend.add_person(
+        embedding,
+        teacher.name,
+        teacher.employee_id,
+        "teacher"
+    )
+
     teacher.save()
 
     return JsonResponse({
         "success": True,
-        "image": teacher.image.url
+        "image": presigned_url(teacher.image.name)
     })
 
 @csrf_exempt
@@ -551,12 +571,29 @@ def admin_upload_student_image(request, student_id):
     if "image" not in request.FILES:
         return JsonResponse({"error": "Image required"}, status=400)
 
-    student.image = request.FILES["image"]
+    file = request.FILES["image"]
+
+    try:
+        embedding, image_bytes = process_face_upload(file, "student")
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+    # Save image ONLY after validation
+    student.image.save(file.name, ContentFile(image_bytes))
+
+    # Register embedding
+    rust_backend.add_person(
+        embedding,
+        student.name,
+        student.roll_no,
+        "student"
+    )
+
     student.save()
 
     return JsonResponse({
         "success": True,
-        "image": student.image.url
+        "image": presigned_url(student.image.name)
     })
 
 @csrf_exempt

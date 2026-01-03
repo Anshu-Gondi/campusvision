@@ -71,11 +71,11 @@ fn detect_emotion(input_image: Vec<u8>) -> PyResult<i64> {
 // ──────────────────────────────────────────────────────────────
 
 #[pyfunction]
-fn add_person(embedding: Vec<f32>, name: String, roll_no: String, role: String) -> PyResult<usize> {
+fn add_person(embedding: Vec<f32>, name: String, person_id: u64, roll_no: String, role: String) -> PyResult<usize> {
     if !["student", "teacher"].contains(&role.as_str()) {
         return Err(PyValueError::new_err("role must be 'student' or 'teacher'"));
     }
-    hnsw_helper::add_face_embedding(embedding, name, roll_no, role)
+    hnsw_helper::add_face_embedding(embedding, name, person_id, roll_no, role)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
@@ -85,6 +85,35 @@ fn search_person(embedding: Vec<f32>, role: String, k: usize) -> PyResult<Vec<(u
         return Err(PyValueError::new_err("role must be 'student' or 'teacher'"));
     }
     Ok(hnsw_helper::search_in_role(&embedding, &role, k))
+}
+
+#[pyfunction]
+fn check_duplicate(
+    embedding: Vec<f32>,
+    role: String,
+    threshold: f32,
+) -> PyResult<PyObject> {
+    Python::with_gil(|py| {
+        let results = hnsw_helper::search_in_role(&embedding, &role, 1);
+
+        let dict = PyDict::new(py);
+
+        if let Some((id, sim)) = results.first() {
+            if *sim >= threshold {
+                if let Some(meta) = hnsw_helper::get_metadata(*id) {
+                    dict.set_item("duplicate", true)?;
+                    dict.set_item("matched_id", id)?;
+                    dict.set_item("similarity", *sim)?;
+                    dict.set_item("name", meta.name)?;
+                    dict.set_item("roll_no", meta.roll_no)?;
+                    return Ok(dict.into());
+                }
+            }
+        }
+
+        dict.set_item("duplicate", false)?;
+        Ok(dict.into())
+    })
 }
 
 #[pyfunction]
@@ -173,17 +202,64 @@ fn detect_and_embed(image_bytes: Vec<u8>) -> PyResult<PyObject> {
     })
 }
 
-// ── FIXED add_to_index (was returning wrong type before) ─────────────────
 #[pyfunction]
-fn add_to_index(embedding: Vec<f32>) -> PyResult<()> {
-    hnsw_helper::add_face_embedding(
-        embedding,
-        "Unknown".to_string(),
-        "NA".to_string(),
-        "student".to_string(),
+fn detect_and_add_person(
+    image_bytes: Vec<u8>,
+    name: String,
+    person_id: u64,
+    roll_no: String,
+    role: String,
+) -> PyResult<usize> {
+    if !["student", "teacher"].contains(&role.as_str()) {
+        return Err(PyValueError::new_err("role must be 'student' or 'teacher'"));
+    }
+
+    // 1. Detect + embed
+    let result = detect_and_embed(image_bytes)?;
+
+    Python::with_gil(|py| {
+        let dict: &PyDict = result.extract(py)?;
+
+        let found: bool = dict.get_item("found").unwrap().extract()?;
+        if !found {
+            return Err(PyValueError::new_err("No face detected"));
+        }
+
+        let embedding: Vec<f32> = dict.get_item("embedding").unwrap().extract()?;
+
+        // 2. Add to HNSW
+        let id = hnsw_helper::add_face_embedding(embedding, name, person_id, roll_no, role)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        Ok(id)
+    })
+}
+
+#[pyfunction]
+fn can_reenroll(
+    embedding: Vec<f32>,
+    person_id: u64,
+    role: String,
+) -> PyResult<bool> {
+    hnsw_helper::can_reenroll(&embedding, person_id, &role)
+        .map_err(|e| PyValueError::new_err(e))
+}
+
+#[pyfunction]
+fn add_to_index(
+    embedding: Vec<f32>,
+    person_id: u64,
+    name: String,
+    roll_no: String,
+    role: String,
+) -> PyResult<usize> {
+    let id = hnsw_helper::add_face_embedding(
+        embedding, name, person_id, // ← FIXED
+        roll_no, role,
     )
     .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(())
+
+    Ok(id)
 }
 
 #[pyfunction]
@@ -473,8 +549,8 @@ pub fn schedule_classes_beam(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
 
         let mut scheduler = GraphScheduler::new(
             embedding_dim,
-            60,     // beam width (increase for higher accuracy)
-            0.02,   // similarity threshold
+            60,   // beam width (increase for higher accuracy)
+            0.02, // similarity threshold
         );
 
         // Run beam scheduler
@@ -518,10 +594,13 @@ fn rust_backend(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add_person, m)?)?;
     m.add_function(wrap_pyfunction!(search_person, m)?)?;
     m.add_function(wrap_pyfunction!(get_face_info, m)?)?;
+    m.add_function(wrap_pyfunction!(can_reenroll, m)?)?;
     m.add_function(wrap_pyfunction!(save_database, m)?)?;
     m.add_function(wrap_pyfunction!(load_database, m)?)?;
     m.add_function(wrap_pyfunction!(total_registered, m)?)?;
     m.add_function(wrap_pyfunction!(detect_and_embed, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_and_add_person, m)?)?;
+    m.add_function(wrap_pyfunction!(check_duplicate, m)?)?;
     m.add_function(wrap_pyfunction!(count_students, m)?)?;
     m.add_function(wrap_pyfunction!(count_teachers, m)?)?;
     m.add_function(wrap_pyfunction!(cctv_process_frame, m)?)?;
