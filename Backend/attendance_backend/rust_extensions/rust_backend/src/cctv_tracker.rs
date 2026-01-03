@@ -1,10 +1,10 @@
 // src/cctv_tracker.rs
+
 use crate::hnsw_helper::batch_search;
-use crate::ort_model::{run_emotion_model_onnx as ort_emotion, run_face_model_onnx as ort_face};
-use crate::tch_model::{run_emotion_model as tch_emotion, run_face_model as tch_face};
+use crate::models::ort_model::{run_emotion_model_onnx as ort_emotion, run_face_model_onnx as ort_face};
+use crate::models::tch_model::{run_emotion_model as tch_emotion, run_face_model as tch_face};
 use crate::utils::{cosine_similarity, iou};
 use opencv::core::{Point2f, Rect};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time::Instant;
 
