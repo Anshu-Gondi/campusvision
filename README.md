@@ -3,125 +3,141 @@
 CampusVision is a proprietary, production-ready face recognition attendance platform combining:
 - a high-performance Rust engine (exposed to Python) for face preprocessing, embedding extraction, ANN searches and CCTV tracking,
 - a Python/Django backend that orchestrates business logic and persistence,
-- a Vite-based web frontend, and
-- an Expo / React Native mobile app.
+- a Vite-based web frontend for admin and organization workflows (schools, colleges, institutions),
+- an Expo / React Native mobile app for end-users (students, teachers, employees).
 
-Important: This repository and its contents are the intellectual property of the owner (Anshu‑Gondi). The code and binaries are proprietary. Any modification, redistribution, or reuse requires explicit permission from the owner — see the LICENSE file at the repository root.
+**Important**: This repository and its contents are the intellectual property of the owner (Anshu-Gondi). The code and binaries are proprietary. Any modification, redistribution, or reuse requires explicit permission from the owner — see the LICENSE file at the repository root.
 
-Table of contents
-- Project overview
-- Repository layout (summary)
-- rust_backend (high-level technical summary)
-- Quick start pointers (local/dev)
-- Security & privacy
-- How to request permission / contact
-- License
-
----
-
-## Project overview
-CampusVision automates attendance by recognizing faces from uploads or live CCTV streams. The project focuses on low-latency inference, robust tracking across frames, and fast nearest-neighbour matching using an HNSW index. The Rust extension crate provides the performance-critical functionality and is consumed by the Python backend (Django).
+### Table of Contents
+- [Project Overview](#project-overview)
+- [Repository Layout (Summary)](#repository-layout-summary)
+- [Component Roles](#component-roles)
+- [rust_backend (High-Level Technical Summary)](#rust_backend-the-rust-engine-concise-technical-summary)
+- [Quick Start Pointers (Local/Dev)](#quick-local-run-pointers-summary)
+- [Security & Privacy](#security--privacy)
+- [Repository Ownership, Change Policy, and Contact](#repository-ownership-change-policy-and-contact)
+- [License](#license)
 
 ---
 
-## Repository layout (top-level)
-- Backend/
-  - attendance_backend/ — Django (or Python) backend and application code.
-  - rust_extensions/rust_backend/ — Rust crate (pyo3/maturin) that exposes the performance primitives to Python.
-  - requirements.txt, start scripts, and environment files expected here.
-- frontend/ — Vite web UI (source in `src/`, public assets in `public/`).
-- mobile/ — Expo / React Native app (TypeScript).
-- LICENSE — project license (proprietary / "All rights reserved" summary included in rust_backend README).
+## Project Overview
+CampusVision automates attendance by recognizing faces from image uploads, manual captures, or live CCTV streams. The system is designed for educational institutions and organizations, delivering low-latency inference, robust multi-frame tracking, and fast nearest-neighbor matching using an HNSW index. The Rust extension provides the performance-critical core and is seamlessly integrated into the Django backend.
 
 ---
 
-## rust_backend — the Rust engine (concise technical summary)
-Location: Backend/attendance_backend/rust_extensions/rust_backend
-
-Purpose: the Rust crate implements performance-sensitive operations and exposes them to Python via pyo3 (packaged with maturin). It is intended to be built and installed into the Python environment used by the Django backend.
-
-Key responsibilities
-- Image preprocessing and alignment (OpenCV + YuNet); returns model-ready tensors.
-- Model inference orchestration (prefers TorchScript via tch, falls back to ONNX runtime).
-- Fast approximate nearest neighbour (ANN) search using HNSW (hnsw_rs) with separate indices for students and teachers.
-- CCTV tracking primitives: per-camera trackers, IoU + embedding similarity matching, daily mark avoidance, and track lifecycle management.
-- Persistence helpers to save / load embeddings and metadata (serde + bincode).
-- Scheduling algorithms (teacher-class assignment) implemented in Rust and exposed to Python.
-- Python-facing API implemented in src/py_functions/* (face_recognition, detection, cctv, database, scheduler, utils).
-
-Important modules (source-level)
-- src/preprocess.rs — decode, detect (YuNet ONNX), align, produce tch::Tensor ([1,3,160,160]).
-- src/hnsw_helper.rs — manages two HNSW indices, metadata, embeddings; add/search/save/load functions.
-- src/cctv_tracker.rs — tracking logic, embedding/emotion extraction, matching logic.
-- src/cctv_state.rs — simple in-memory "already-marked-today" registry.
-- src/py_functions/* — pyo3 wrappers exposing the Rust functions to Python as the `rust_backend` module.
-
-Python API (examples, exported names)
-- detect_and_embed / detect_and_add_person
-- add_person, search_person, can_reenroll, add_to_index
-- cctv_process_frame, cctv_get_tracked_faces, cctv_clear_daily
-- check_duplicate, get_face_info, count_students/teachers, save_database, load_database
-- schedule_classes, schedule_classes_beam
-- verify_face, detect_emotion
-
-How Django integrates (high level)
-- Build the extension (see Build below) and install in the Python environment used by Django.
-- Import `rust_backend` in Django code and call exposed functions from views, background workers, or Celery tasks:
-  - Enrollment: use detect_and_add_person or detect_and_embed + add_person.
-  - Live CCTV processing: call cctv_process_frame and persist identified results as Attendance records.
-  - Duplicate-check during enrollment: check_duplicate.
-
-Build & install (developer/dev env)
-- Prerequisites: Rust (stable), Python 3.10+, maturin, platform native libraries (OpenCV, libtorch if needed), and a Python virtualenv.
-- Common development commands (run inside a Python venv):
-  - cd Backend/attendance_backend/rust_extensions/rust_backend
-  - pip install maturin
-  - maturin develop --release        # builds and installs the extension into current venv
-  - (alternatively) maturin build --release && pip install target/wheels/*.whl
-- Notes:
-  - Ensure the system has the necessary native libraries if building with native OpenCV / libtorch support.
-  - Use the same Python interpreter for maturin and Django (ABI compatibility).
-
-Quick local run pointers (summary)
-- Backend:
-  - Create and activate a Python virtual environment.
-  - pip install -r Backend/requirements.txt
-  - Build and install rust_backend as above (if required by backend).
-  - Run Django dev server / start application per Backend README.
-- Frontend:
-  - cd frontend
-  - pnpm install   (or npm/yarn)
-  - pnpm dev       (or npm run dev)
-- Mobile:
-  - cd mobile
-  - pnpm install
-  - pnpm start     (expo start)
-  - Use Expo App / emulator to run.
+## Repository Layout (Summary)
+```
+Face-Recognition-Attendance-System/
+├── Backend/
+│   ├── attendance_backend/              # Main Django project (settings, urls, wsgi, etc.)
+│   │   ├── attendance_backend/          # Project folder (inner)
+│   │   ├── attendance/                  # Django app: attendance logic, models, views
+│   │   ├── Admin/                       # Django app: organization management, admin features
+│   │   ├── rust_extensions/
+│   │   │   └── rust_backend/            # Rust crate (pyo3/maturin) exposing performance primitives
+│   │   ├── manage.py                    # Django management script
+│   │   ├── requirements.txt             # Python dependencies
+│   │   └── start scripts / env files    # Development scripts and configuration
+├── frontend/                                # Vite + React web UI – Admin & organization dashboards/workflows
+├── mobile/                                  # Expo / React Native (TypeScript) – User-facing mobile application
+├── LICENSE                                  # Project license (proprietary)
+└── README.md                                # This file
+```
 
 ---
 
-## Security & privacy (short)
-- Face images and embeddings are sensitive biometric data. You must:
-  - Obtain explicit consent before collecting face data.
-  - Use HTTPS for all transport channels.
+## Component Roles
+- **Backend (Django)**: Handles API endpoints, business logic, database persistence, authentication, and integration with the Rust engine.
+  - `attendance_backend/attendance_backend/` – Django project configuration (settings, urls, etc.).
+  - `attendance_backend/attendance/` – App focused on attendance marking, records, and reporting.
+  - `attendance_backend/Admin/` – App handling organization management, user roles, class/section setup, and admin workflows.
+  - `attendance_backend/rust_extensions/rust_backend/` – High-performance Rust core.
+- **frontend/**: Web dashboard built with Vite + React, primarily for administrators, teachers, and institution staff to manage students, classes, reports, CCTV feeds, and system settings.
+- **mobile/**: React Native (Expo) mobile application for end-users (students/teachers) – features include profile viewing, attendance history, notifications, and quick check-ins.
+
+---
+
+## rust_backend — The Rust Engine (Concise Technical Summary)
+**Location**: `Backend/attendance_backend/rust_extensions/rust_backend`
+
+**Purpose**: Implements performance-sensitive operations and exposes them to Python via pyo3 (built with maturin).
+
+**Key Responsibilities**
+- Image preprocessing and face alignment (OpenCV + YuNet).
+- Model inference (TorchScript via tch-rs preferred, ONNX fallback).
+- Fast ANN search with HNSW (separate indices for students and teachers).
+- CCTV frame tracking, IoU + embedding matching, daily attendance deduplication.
+- Persistence of embeddings and metadata (serde + bincode).
+- Scheduling algorithms exposed to Python.
+- Comprehensive Python API via `src/py_functions/*`.
+
+**Python API Examples**
+- `detect_and_embed`, `detect_and_add_person`
+- `add_person`, `search_person`, `check_duplicate`
+- `cctv_process_frame`, `cctv_get_tracked_faces`
+- `save_database`, `load_database`
+- `schedule_classes`, `verify_face`, `detect_emotion`
+
+**Build & Install**
+```bash
+cd Backend/attendance_backend/rust_extensions/rust_backend
+pip install maturin
+maturin develop --release    # Installs into active venv
+```
+
+---
+
+## Quick Local Run Pointers (Summary)
+
+**Backend**
+- Create and activate a Python virtual environment.
+- `pip install -r Backend/attendance_backend/requirements.txt`
+- Build and install `rust_backend` (see above).
+- Run migrations and start Django server:
+  ```bash
+  cd Backend/attendance_backend
+  python manage.py migrate
+  python manage.py runserver
+  ```
+
+**Frontend (Admin/Organization Dashboard)**
+```bash
+cd frontend
+pnpm install    # or npm/yarn install
+pnpm dev        # Starts Vite dev server
+```
+
+**Mobile (User App)**
+```bash
+cd mobile
+pnpm install
+pnpm start      # Expo start – scan QR or use emulator
+```
+
+---
+
+## Security & Privacy
+- Face images and embeddings are sensitive biometric data. Always:
+  - Obtain explicit consent before collection.
+  - Use HTTPS everywhere.
   - Encrypt data at rest and in transit.
-  - Properly restrict access and audit exports.
-- Do not commit face datasets, model weights, or secrets to the repository.
+  - Restrict access and maintain audit logs.
+- Never commit datasets, model weights, or secrets to version control.
 
 ---
 
-## Repository ownership, change policy, and contact
-- Ownership: repository content and rust_backend are proprietary and owned by Anshu‑Gondi.
-- Change policy: any changes to the repository, code, or license require explicit permission from the owner. If you need updates, obtain written permission from Anshu‑Gondi or open a request/issue in this repository for review/approval.
-- Contact / permission requests:
-  - GitHub: https://github.com/Anshu-Gondi
-  - For permission requests, open an issue tagging the owner or reach out via the owner’s preferred contact.
+## Repository Ownership, Change Policy, and Contact
+- **Ownership**: All content is proprietary and owned by Anshu-Gondi.
+- **Change Policy**: Modifications, forks, or contributions require explicit written permission. Open an issue for any requests.
+- **Contact**:
+  - GitHub: [https://github.com/Anshu-Gondi](https://github.com/Anshu-Gondi)
+  - For permission or collaboration inquiries, open an issue or use the owner's preferred contact method.
 
 ---
 
 ## License
-- See the LICENSE file in the repository root. The rust_backend README and license text indicate "All Rights Reserved" and state that copying, modifying, or redistributing the code is prohibited without explicit authorization.
+See the [LICENSE](LICENSE) file. The project is proprietary with "All Rights Reserved." Unauthorized copying, modification, distribution, or use is prohibited.
 
 ---
 
-If you want this README adjusted (tone, length, or to include/omit specific technical details), tell me the exact changes and I will produce a revised version. I will not commit anything unless you explicitly request and authorize me to do so.
+**Made with ❤️ by [Anshu Gondi](https://github.com/Anshu-Gondi)**
