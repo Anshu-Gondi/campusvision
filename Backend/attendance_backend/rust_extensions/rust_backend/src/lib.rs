@@ -9,7 +9,8 @@ pub mod preprocess;
 pub mod scheduler;
 pub mod utils;
 
-mod py_functions;
+pub mod rust_only;
+pub mod py_functions;
 
 use pyo3::prelude::*;
 use py_functions::add_functions;

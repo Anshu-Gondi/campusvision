@@ -1,23 +1,28 @@
 // src/py_functions/face_recognition.rs
 
-use crate::hnsw_helper;
 use pyo3::{exceptions::PyValueError, prelude::*};
+use crate::rust_only::face_recognition::logic::*;
 
 #[pyfunction]
-fn add_person(embedding: Vec<f32>, name: String, person_id: u64, roll_no: String, role: String) -> PyResult<usize> {
-    if !["student", "teacher"].contains(&role.as_str()) {
-        return Err(PyValueError::new_err("role must be 'student' or 'teacher'"));
-    }
-    hnsw_helper::add_face_embedding(embedding, name, person_id, roll_no, role)
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+fn add_person(
+    embedding: Vec<f32>,
+    name: String,
+    person_id: u64,
+    roll_no: String,
+    role: String,
+) -> PyResult<usize> {
+    add_person_rust(embedding, name, person_id, roll_no, role)
+        .map_err(|e| PyValueError::new_err(e))
 }
 
 #[pyfunction]
-fn search_person(embedding: Vec<f32>, role: String, k: usize) -> PyResult<Vec<(usize, f32)>> {
-    if !["student", "teacher"].contains(&role.as_str()) {
-        return Err(PyValueError::new_err("role must be 'student' or 'teacher'"));
-    }
-    Ok(hnsw_helper::search_in_role(&embedding, &role, k))
+fn search_person(
+    embedding: Vec<f32>,
+    role: String,
+    k: usize,
+) -> PyResult<Vec<(usize, f32)>> {
+    search_person_rust(embedding, role, k)
+        .map_err(|e| PyValueError::new_err(e))
 }
 
 #[pyfunction]
@@ -26,7 +31,7 @@ fn can_reenroll(
     person_id: u64,
     role: String,
 ) -> PyResult<bool> {
-    hnsw_helper::can_reenroll(&embedding, person_id, &role)
+    can_reenroll_rust(embedding, person_id, role)
         .map_err(|e| PyValueError::new_err(e))
 }
 
@@ -38,19 +43,16 @@ fn add_to_index(
     roll_no: String,
     role: String,
 ) -> PyResult<usize> {
-    let id = hnsw_helper::add_face_embedding(
-        embedding, name, person_id, // ← FIXED
-        roll_no, role,
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-    Ok(id)
+    add_to_index_rust(embedding, person_id, name, roll_no, role)
+        .map_err(|e| PyValueError::new_err(e))
 }
 
 #[pyfunction]
-fn query_similar(embedding: Vec<f32>, k: usize) -> PyResult<Vec<usize>> {
-    let results = hnsw_helper::search_in_role(&embedding, "student", k);
-    Ok(results.into_iter().map(|(id, _)| id).collect())
+fn query_similar(
+    embedding: Vec<f32>,
+    k: usize,
+) -> PyResult<Vec<usize>> {
+    Ok(query_similar_rust(embedding, k))
 }
 
 pub fn register(m: &PyModule) -> PyResult<()> {

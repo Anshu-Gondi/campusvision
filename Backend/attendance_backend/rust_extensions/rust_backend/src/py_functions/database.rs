@@ -1,7 +1,5 @@
-// src/py_functions/database.rs
-
-use crate::hnsw_helper;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+use crate::rust_only::database::logic::*;
 
 #[pyfunction]
 fn check_duplicate(
@@ -10,38 +8,32 @@ fn check_duplicate(
     threshold: f32,
 ) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        let results = hnsw_helper::search_in_role(&embedding, &role, 1);
+        let result = check_duplicate_rust(&embedding, &role, threshold);
 
         let dict = PyDict::new(py);
+        dict.set_item("duplicate", result.duplicate)?;
 
-        if let Some((id, sim)) = results.first() {
-            if *sim >= threshold {
-                if let Some(meta) = hnsw_helper::get_metadata(*id) {
-                    dict.set_item("duplicate", true)?;
-                    dict.set_item("matched_id", id)?;
-                    dict.set_item("similarity", *sim)?;
-                    dict.set_item("name", meta.name)?;
-                    dict.set_item("roll_no", meta.roll_no)?;
-                    return Ok(dict.into());
-                }
-            }
+        if result.duplicate {
+            dict.set_item("matched_id", result.matched_id)?;
+            dict.set_item("similarity", result.similarity)?;
+            dict.set_item("name", result.name)?;
+            dict.set_item("roll_no", result.roll_no)?;
         }
 
-        dict.set_item("duplicate", false)?;
-        Ok(dict.into())
+        Ok(dict.to_object(py))
     })
 }
 
 #[pyfunction]
 fn get_face_info(id: usize) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        if let Some(meta) = hnsw_helper::get_metadata(id) {
+        if let Some((id, name, roll_no, role)) = get_face_info_rust(id) {
             let dict = PyDict::new(py);
-            dict.set_item("id", meta.id)?;
-            dict.set_item("name", meta.name)?;
-            dict.set_item("roll_no", meta.roll_no)?;
-            dict.set_item("role", meta.role)?;
-            Ok(dict.into())
+            dict.set_item("id", id)?;
+            dict.set_item("name", name)?;
+            dict.set_item("roll_no", roll_no)?;
+            dict.set_item("role", role)?;
+            Ok(dict.to_object(py))
         } else {
             Err(PyValueError::new_err("Face ID not found"))
         }
@@ -50,27 +42,29 @@ fn get_face_info(id: usize) -> PyResult<PyObject> {
 
 #[pyfunction]
 fn count_students() -> PyResult<usize> {
-    Ok(hnsw_helper::count_by_role("student"))
+    Ok(count_students_rust())
 }
 
 #[pyfunction]
 fn count_teachers() -> PyResult<usize> {
-    Ok(hnsw_helper::count_by_role("teacher"))
+    Ok(count_teachers_rust())
 }
 
 #[pyfunction]
 fn save_database(path: String) -> PyResult<()> {
-    hnsw_helper::save_all(&path).map_err(|e| PyValueError::new_err(e.to_string()))
+    save_database_rust(&path)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
 fn load_database(path: String) -> PyResult<()> {
-    hnsw_helper::load_all(&path).map_err(|e| PyValueError::new_err(e.to_string()))
+    load_database_rust(&path)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
 fn total_registered() -> PyResult<usize> {
-    Ok(hnsw_helper::get_total_faces())
+    Ok(total_registered_rust())
 }
 
 pub fn register(m: &PyModule) -> PyResult<()> {

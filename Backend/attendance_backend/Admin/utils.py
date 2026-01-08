@@ -1,6 +1,8 @@
 import jwt
 from django.conf import settings
 from django.http import JsonResponse
+from attendance.models import FaceRejectionLog
+import rust_backend
 
 SECRET = settings.ADMIN_JWT_SECRET
 
@@ -32,45 +34,87 @@ def admin_required(view_func):
 
     return wrapper
 
-import rust_backend
-
-DUPLICATE_REJECT_THRESHOLD = 0.75   # same person → reject
-MIN_QUALITY_SIMILARITY = 0.55       # blurry / bad face → reject
+# Face recognition thresholds
+DUPLICATE_THRESHOLD = 0.75   # reject other person's face
+REENROLL_THRESHOLD = 0.65    # allow same person update
+QUALITY_THRESHOLD = 0.55     # blur / side face
 MAX_IMAGES_PER_PERSON = 5           # future-proof
 
 
-def process_face_upload(file, role):
-    """
-    1. Detect face
-    2. Extract embedding
-    3. Quality gate
-    4. Duplicate check
-    """
+# Face rejection logging
+def log_face_rejection(
+    *,
+    reason,
+    role,
+    admin,
+    person_id=None,
+    similarity=None,
+    threshold=None,
+    message=""
+):
+    FaceRejectionLog.objects.create(
+        reason=reason,
+        role=role,
+        person_id=person_id,
+        admin_id=admin.get("sub") or admin.get("admin_id"),
+        similarity=similarity,
+        threshold=threshold,
+        message=message,
+    )
+
+
+def process_face_upload(file, role, admin=None, person_id=None):
     image_bytes = file.read()
 
-    result = rust_backend.detect_and_embed(image_bytes)
+    # ---- Detect + Embed (Rust) ----
+    try:
+        result = rust_backend.detect_and_embed(image_bytes)
+    except Exception as e:
+        if admin:
+            log_face_rejection(
+                reason="rust_failure",
+                role=role,
+                admin=admin,
+                person_id=person_id,
+                message=str(e),
+            )
+        raise ValueError("Face processing failed")
 
-    if not result["found"]:
+    if not result.get("found"):
+        if admin:
+            log_face_rejection(
+                reason="no_face_detected",
+                role=role,
+                admin=admin,
+                person_id=person_id,
+                message="No face detected in image",
+            )
         raise ValueError("No face detected")
 
     embedding = result["embedding"]
 
-    # ---- Duplicate check ----
-    dup = rust_backend.check_duplicate(
-        embedding,
-        role,
-        DUPLICATE_REJECT_THRESHOLD
+    # ---- QUALITY GATE ----
+    total = (
+        rust_backend.count_students()
+        if role == "student"
+        else rust_backend.count_teachers()
     )
 
-    if dup.get("duplicate"):
-        raise ValueError(
-            f"Duplicate face detected: {dup['name']} "
-            f"(similarity={dup['similarity']:.2f})"
-        )
-
-    # ---- Quality gate (nearest neighbor similarity) ----
-    nearest = rust_backend.search_person(embedding, role, 1)
-    if nearest and nearest[0][1] < MIN_QUALITY_SIMILARITY:
-        raise ValueError("Low-quality face. Please retake the image.")
+    if total > 0:
+        matches = rust_backend.search_person(embedding, role, 1)
+        if matches:
+            _, max_sim = matches[0]
+            if max_sim < QUALITY_THRESHOLD:
+                if admin:
+                    log_face_rejection(
+                        reason="low_quality",
+                        role=role,
+                        admin=admin,
+                        person_id=person_id,
+                        similarity=max_sim,
+                        threshold=QUALITY_THRESHOLD,
+                        message="Blurred / side-face / low confidence",
+                    )
+                raise ValueError("Low-quality face. Please retake image.")
 
     return embedding, image_bytes

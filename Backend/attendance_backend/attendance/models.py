@@ -9,6 +9,7 @@ from django.dispatch import receiver
 
 # ----------------- Organization (School / College) -----------------
 
+
 class Organization(models.Model):
     ORG_TYPES = [
         ("school", "School"),
@@ -30,7 +31,8 @@ class Organization(models.Model):
 
 class Branch(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
-    name = models.CharField(max_length=200)   # e.g., "Main Campus", "Delhi Branch", "Campus A"
+    # e.g., "Main Campus", "Delhi Branch", "Campus A"
+    name = models.CharField(max_length=200)
 
     address = models.CharField(max_length=500, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
@@ -66,7 +68,8 @@ class Department(models.Model):
 
 class Student(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
-    department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
+    department = models.ForeignKey(
+        Department, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=100)
     roll_no = models.CharField(max_length=20, unique=True)
     class_name = models.CharField(max_length=50)
@@ -92,12 +95,10 @@ class Teacher(models.Model):
     phone = models.CharField(max_length=20, blank=True)
 
     subjects = models.JSONField(default=list)          # ["Math", "Physics"]
-    can_teach_classes = models.JSONField(default=list) # ["10-A", "9-B"]
+    can_teach_classes = models.JSONField(default=list)  # ["10-A", "9-B"]
 
     reliability_score = models.FloatField(default=0.8)
     workload_score = models.IntegerField(default=0)
-
-    embedding_vector = models.JSONField(default=list, blank=True)
 
     image = models.ImageField(upload_to="teachers/", null=True, blank=True)
 
@@ -110,9 +111,11 @@ class Teacher(models.Model):
 
 # ----------------- School Class -----------------
 
+
 class SchoolClass(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
-    class_name = models.CharField(max_length=50, null=True, blank=True)   # "10"
+    class_name = models.CharField(
+        max_length=50, null=True, blank=True)   # "10"
     section = models.CharField(max_length=10, null=True, blank=True)      # "A"
 
     def __str__(self):
@@ -123,7 +126,8 @@ class SchoolClass(models.Model):
 
 class StudentTimeTable(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
-    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
+    school_class = models.ForeignKey(
+        SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
     subject = models.CharField(max_length=100)
     day_of_week = models.CharField(
         max_length=10,
@@ -143,7 +147,8 @@ class TeacherTimeTable(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE)
     subject = models.CharField(max_length=100)
-    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
+    school_class = models.ForeignKey(
+        SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
     day_of_week = models.CharField(
         max_length=10,
         choices=[("Monday", "Monday"), ("Tuesday", "Tuesday"), ("Wednesday", "Wednesday"),
@@ -210,6 +215,8 @@ class QRSession(models.Model):
         return f"{self.code} valid till {self.expires_at}"
 
 # -----------------  CCTV Camera -----------------
+
+
 class Camera(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
@@ -217,17 +224,15 @@ class Camera(models.Model):
     floor = models.CharField(max_length=50, null=True, blank=True)
     room = models.CharField(max_length=50, null=True, blank=True)
     active = models.BooleanField(default=True)
-    role = models.CharField(max_length=10, choices=[("student", "Student"), ("teacher", "Teacher")], default="student")
+    role = models.CharField(max_length=10, choices=[(
+        "student", "Student"), ("teacher", "Teacher")], default="student")
+
 
 class CameraMatch(models.Model):
     person_id = models.CharField(max_length=100)  # roll_no or employee_id
     camera = models.ForeignKey(Camera, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(auto_now_add=True)
     similarity = models.FloatField()
-    
-
-import uuid
-from django.db import models
 
 
 class FaceImage(models.Model):
@@ -296,21 +301,42 @@ class FaceImage(models.Model):
     def __str__(self):
         return f"{self.person_type}:{self.person_id} | emb={self.embedding_id}"
 
+class FaceRejectionLog(models.Model):
+    ROLE_CHOICES = [
+        ("student", "Student"),
+        ("teacher", "Teacher"),
+    ]
+
+    reason = models.CharField(max_length=50)
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
+
+    person_id = models.CharField(max_length=50, null=True, blank=True)
+    admin_id = models.CharField(max_length=50)
+
+    similarity = models.FloatField(null=True, blank=True)
+    threshold = models.FloatField(null=True, blank=True)
+
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.role} | {self.reason} | {self.created_at}"
+
 # Delete old image file on update
+
+
 @receiver(pre_save, sender=Student)
 def auto_delete_old_student_image(sender, instance, **kwargs):
     if not instance.pk:
-        return  # new object, nothing to delete
+        return
 
     try:
         old_image = Student.objects.get(pk=instance.pk).image
     except Student.DoesNotExist:
         return
 
-    new_image = instance.image
-    if old_image and old_image != new_image:
-        if os.path.isfile(old_image.path):
-            os.remove(old_image.path)
+    if old_image and old_image != instance.image:
+        old_image.delete(save=False)
 
 
 @receiver(pre_save, sender=Teacher)
@@ -323,20 +349,18 @@ def auto_delete_old_teacher_image(sender, instance, **kwargs):
     except Teacher.DoesNotExist:
         return
 
-    new_image = instance.image
-    if old_image and old_image != new_image:
-        if os.path.isfile(old_image.path):
-            os.remove(old_image.path)
+    if old_image and old_image != instance.image:
+        old_image.delete(save=False)
 
 
 # Delete image file on delete
 @receiver(post_delete, sender=Student)
 def delete_student_image(sender, instance, **kwargs):
-    if instance.image and os.path.isfile(instance.image.path):
-        os.remove(instance.image.path)
+    if instance.image:
+        instance.image.delete(save=False)
 
 
 @receiver(post_delete, sender=Teacher)
 def delete_teacher_image(sender, instance, **kwargs):
-    if instance.image and os.path.isfile(instance.image.path):
-        os.remove(instance.image.path)
+    if instance.image:
+        instance.image.delete(save=False)

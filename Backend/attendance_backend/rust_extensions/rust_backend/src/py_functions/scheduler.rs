@@ -1,68 +1,57 @@
-// src/py_functions/scheduler.rs
-
-use crate::scheduler::scheduler::{ClassRequest, FullScheduler, GraphScheduler};
 use chrono::NaiveTime;
-use pyo3::prelude::*;
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+
+use crate::rust_only::scheduler::logic::{
+    PyClassInput,
+    schedule_classes_rust,
+    schedule_classes_beam_rust,
+};
+
+fn parse_classes(py: Python, py_classes: Vec<PyObject>) -> PyResult<Vec<PyClassInput>> {
+    let mut classes = Vec::new();
+
+    for cls in py_classes {
+        let dict: &PyDict = cls.extract(py)?;
+
+        let start: String = dict.get_item("start_time").unwrap().extract()?;
+        let end: String = dict.get_item("end_time").unwrap().extract()?;
+
+        let start_time = NaiveTime::parse_from_str(&start, "%H:%M")
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        let end_time = NaiveTime::parse_from_str(&end, "%H:%M")
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        classes.push(PyClassInput {
+            class_name: dict.get_item("class_name").unwrap().extract()?,
+            section: dict.get_item("section").unwrap().extract()?,
+            subject: dict.get_item("subject").unwrap().extract()?,
+            start_time,
+            end_time,
+        });
+    }
+
+    Ok(classes)
+}
 
 #[pyfunction]
 pub fn schedule_classes(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        // Convert Python → Rust structs
-        let mut classes = Vec::new();
+        let inputs = parse_classes(py, py_classes)?;
+        let results = schedule_classes_rust(inputs);
 
-        for cls in py_classes {
-            let dict: &pyo3::types::PyDict = cls.extract(py)?;
-
-            let class_name: String = dict.get_item("class_name").unwrap().extract()?;
-            let section: String = dict.get_item("section").unwrap().extract()?;
-            let subject: String = dict.get_item("subject").unwrap().extract()?;
-
-            let start: String = dict.get_item("start_time").unwrap().extract()?;
-            let end: String = dict.get_item("end_time").unwrap().extract()?;
-
-            let start_time = NaiveTime::parse_from_str(&start, "%H:%M")
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
-
-            let end_time = NaiveTime::parse_from_str(&end, "%H:%M")
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
-
-            classes.push(ClassRequest {
-                class_name,
-                section,
-                subject,
-                start_time,
-                end_time,
-            });
-        }
-
-        // --------------------------
-        // Use your updated scheduler
-        // --------------------------
-        //
-        // Choose embedding dimension (32 or 64 recommended)
-        //
-        let embedding_dim = 32;
-
-        let mut scheduler = FullScheduler::new(embedding_dim);
-
-        // Compute schedule
-        let results = scheduler.assign_classes(&classes);
-
-        // Convert Rust output → Python list of dicts
         let py_list = pyo3::types::PyList::empty(py);
 
         for r in results {
-            let d = pyo3::types::PyDict::new(py);
-
-            d.set_item("class_name", r.class.class_name)?;
-            d.set_item("section", r.class.section)?;
-            d.set_item("subject", r.class.subject)?;
-            d.set_item("teacher_id", r.teacher.id)?;
-            d.set_item("teacher_name", r.teacher.name)?;
-            d.set_item("similarity", r.teacher.similarity)?;
-            d.set_item("reliability", r.teacher.reliability)?;
-            d.set_item("workload", r.teacher.workload)?;
-
+            let d = PyDict::new(py);
+            d.set_item("class_name", r.class_name)?;
+            d.set_item("section", r.section)?;
+            d.set_item("subject", r.subject)?;
+            d.set_item("teacher_id", r.teacher_id)?;
+            d.set_item("teacher_name", r.teacher_name)?;
+            d.set_item("similarity", r.similarity)?;
+            d.set_item("reliability", r.reliability)?;
+            d.set_item("workload", r.workload)?;
             py_list.append(d)?;
         }
 
@@ -73,69 +62,21 @@ pub fn schedule_classes(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
 #[pyfunction]
 pub fn schedule_classes_beam(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        // -------------------------
-        // Convert Python → Rust
-        // -------------------------
-        let mut classes = Vec::new();
+        let inputs = parse_classes(py, py_classes)?;
+        let results = schedule_classes_beam_rust(inputs);
 
-        for cls in py_classes {
-            let dict: &pyo3::types::PyDict = cls.extract(py)?;
-
-            let class_name: String = dict.get_item("class_name").unwrap().extract()?;
-            let section: String = dict.get_item("section").unwrap().extract()?;
-            let subject: String = dict.get_item("subject").unwrap().extract()?;
-
-            let start: String = dict.get_item("start_time").unwrap().extract()?;
-            let end: String = dict.get_item("end_time").unwrap().extract()?;
-
-            let start_time = NaiveTime::parse_from_str(&start, "%H:%M")
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
-
-            let end_time = NaiveTime::parse_from_str(&end, "%H:%M")
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
-
-            classes.push(ClassRequest {
-                class_name,
-                section,
-                subject,
-                start_time,
-                end_time,
-            });
-        }
-
-        // --------------------------------------
-        // Initialise your Beam Search Scheduler
-        // --------------------------------------
-        let embedding_dim = 32;
-
-        let mut scheduler = GraphScheduler::new(
-            embedding_dim,
-            60,   // beam width (increase for higher accuracy)
-            0.02, // similarity threshold
-        );
-
-        // Run beam scheduler
-        let results = scheduler.assign_classes_beam(&classes);
-
-        // -------------------------
-        // Convert Rust → Python
-        // -------------------------
         let py_list = pyo3::types::PyList::empty(py);
 
         for r in results {
-            let d = pyo3::types::PyDict::new(py);
-
-            d.set_item("class_name", r.class.class_name)?;
-            d.set_item("section", r.class.section)?;
-            d.set_item("subject", r.class.subject)?;
-
-            d.set_item("teacher_id", r.teacher.id)?;
-            d.set_item("teacher_name", r.teacher.name)?;
-
-            d.set_item("similarity", r.teacher.similarity)?;
-            d.set_item("reliability", r.teacher.reliability)?;
-            d.set_item("workload", r.teacher.workload)?;
-
+            let d = PyDict::new(py);
+            d.set_item("class_name", r.class_name)?;
+            d.set_item("section", r.section)?;
+            d.set_item("subject", r.subject)?;
+            d.set_item("teacher_id", r.teacher_id)?;
+            d.set_item("teacher_name", r.teacher_name)?;
+            d.set_item("similarity", r.similarity)?;
+            d.set_item("reliability", r.reliability)?;
+            d.set_item("workload", r.workload)?;
             py_list.append(d)?;
         }
 
