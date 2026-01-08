@@ -1,7 +1,9 @@
 // src/cctv_tracker.rs
 
 use crate::hnsw_helper::batch_search;
-use crate::models::ort_model::{run_emotion_model_onnx as ort_emotion, run_face_model_onnx as ort_face};
+use crate::models::ort_model::{
+    run_emotion_model_onnx as ort_emotion, run_face_model_onnx as ort_face,
+};
 use crate::models::tch_model::{run_emotion_model as tch_emotion, run_face_model as tch_face};
 use crate::utils::{cosine_similarity, iou};
 use opencv::core::{Point2f, Rect};
@@ -136,11 +138,10 @@ impl FaceTracker {
         // Step 3: Add unmatched detections as new tracks
         for (i, (emb, emo, bbox, landmarks)) in embeddings_emotions.into_iter().enumerate() {
             if !matched[i] {
-                let mut person_id = None;
                 // optional: HNSW search for new track
                 let s = student_hits[i];
                 let t = teacher_hits[i];
-                person_id = s.or(t).map(|(id, _)| id);
+                let person_id = s.or(t).map(|(id, _)| id);
 
                 active.push(TrackedFace {
                     track_id: self.next_id,
