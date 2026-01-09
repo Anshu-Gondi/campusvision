@@ -6,6 +6,16 @@ The extension provides fast face detection, recognition, tracking, enrollment, d
 > **Module name**: The imported Python module name is defined in `Cargo.toml` under `[lib] name = "..."`.  
 > In this guide we use `rust_backend`. Replace it with your actual module name if different.
 
+## Table of Contents
+
+- [Installation](#installation)
+- [CCTV Real-Time Processing](#cctv-real-time-processing)
+- [Face Recognition & Enrollment](#face-recognition--enrollment)
+- [Database Management](#database-management)
+- [Class Scheduling](#class-scheduling)
+- [Utilities](#utilities)
+- [Best Practices](#best-practices)
+
 ## Installation
 
 ### Prerequisites
