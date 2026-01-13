@@ -21,6 +21,8 @@ pub struct TrackedFace {
     pub hits: u32,
     pub age: u32,
     pub last_seen: Instant,
+    pub confidence: f32, // 0.0 → 1.0
+    pub id_locked: bool, // once true, ID never changes
 }
 
 pub struct FaceTracker {
@@ -124,14 +126,30 @@ impl FaceTracker {
                 track.last_seen = now;
                 matched[i] = true;
 
-                // Optional: HNSW search in parallel
-                if track.person_id.is_none() {
+                // Optional: HNSW search
+                if !track.id_locked && track.hits >= 3 {
                     let s = student_hits[i];
                     let t = teacher_hits[i];
-                    track.person_id = s.or(t).map(|(id, _)| id);
+
+                    if let Some((id, sim)) = s.or(t) {
+                        if sim >= 0.75 {
+                            track.person_id = Some(id);
+                            track.confidence = sim;
+                        }
+                    }
+                }
+
+                // ✅ CONFIDENCE BOOST + LOCK (MUST BE HERE)
+                if track.person_id.is_some() {
+                    track.confidence = (track.confidence + 0.1).min(1.0);
+
+                    if track.confidence >= 0.85 && track.hits >= 5 {
+                        track.id_locked = true;
+                    }
                 }
             } else {
                 track.age += 1;
+                track.confidence *= 0.95;
             }
         }
 
@@ -153,6 +171,8 @@ impl FaceTracker {
                     hits: 1,
                     age: 0,
                     last_seen: now,
+                    confidence: if person_id.is_some() { 0.6 } else { 0.0 },
+                    id_locked: false,
                 });
                 self.next_id += 1;
             }
@@ -162,11 +182,7 @@ impl FaceTracker {
         active.retain(|t| t.age <= self.max_age);
 
         // Step 5: Update internal map
-        self.tracks = active
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (i, t.clone()))
-            .collect();
+        self.tracks = active.iter().map(|t| (t.track_id, t.clone())).collect();
         active
     }
 }

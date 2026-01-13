@@ -2,14 +2,17 @@ use crate::cctv_state::*;
 use crate::cctv_tracker::FaceTracker;
 use crate::hnsw_helper;
 use crate::preprocess;
-use once_cell::sync::Lazy;
 use opencv::core::{Size, Vector};
 use opencv::imgcodecs;
 use opencv::prelude::MatTraitConst;
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
-static STUDENT_TRACKER: Lazy<Mutex<FaceTracker>> = Lazy::new(|| Mutex::new(FaceTracker::new(30)));
-static TEACHER_TRACKER: Lazy<Mutex<FaceTracker>> = Lazy::new(|| Mutex::new(FaceTracker::new(30)));
+thread_local! {
+    /// (role, camera_id) -> FaceTracker
+    static TRACKERS: RefCell<HashMap<(String, String), FaceTracker>> =
+        RefCell::new(HashMap::new());
+}
 
 #[derive(Clone)]
 pub struct CctvResult {
@@ -29,6 +32,7 @@ pub struct CctvResult {
 pub fn process_frame_rust(
     frame_bytes: &[u8],
     role: &str,
+    camera_id: &str,
     min_confidence: f32,
     min_track_hits: u32,
     model_path: Option<&str>, // NEW optional argument
@@ -70,13 +74,15 @@ pub fn process_frame_rust(
         detections.push((bbox, landmarks, tensor));
     }
 
-    let tracker_mutex = if role == "teacher" {
-        &TEACHER_TRACKER
-    } else {
-        &STUDENT_TRACKER
-    };
-    let mut tracker = tracker_mutex.lock().unwrap();
-    let tracks = tracker.update(detections);
+    let tracks = TRACKERS.with(|map| {
+        let mut map = map.borrow_mut();
+
+        let key = (role.to_string(), camera_id.to_string());
+
+        let tracker = map.entry(key).or_insert_with(|| FaceTracker::new(30));
+
+        tracker.update(detections)
+    });
 
     // build CctvResult as before
     let mut results = Vec::new();
@@ -94,7 +100,7 @@ pub fn process_frame_rust(
             person_id: track.person_id.map(|id| id as u64),
             name: None,
             roll_no: None,
-            role: None,
+            role: Some(role.to_string()),
             identified: track.person_id.is_some(),
             confidence: 0.0,
             mark_now: None,
@@ -142,34 +148,40 @@ pub fn process_frame_rust(
     Ok(results)
 }
 
-pub fn get_tracked_faces_rust(role: &str) -> Vec<CctvResult> {
-    let tracker_mutex = if role == "teacher" {
-        &TEACHER_TRACKER
-    } else {
-        &STUDENT_TRACKER
-    };
-
-    let tracker = tracker_mutex.lock().unwrap();
-    tracker
-        .tracks
-        .values()
-        .cloned()
-        .map(|t| CctvResult {
-            track_id: t.track_id as i32,
-            bbox: (t.bbox.x, t.bbox.y, t.bbox.width, t.bbox.height),
-            hits: t.hits,
-            age: t.age,
-            person_id: t.person_id.map(|id| id as u64),
-            name: None,
-            roll_no: None,
-            role: None,
-            identified: t.person_id.is_some(),
-            confidence: 0.0,
-            mark_now: None,
-        })
-        .collect()
+pub fn get_tracked_faces_rust(role: &str, camera_id: &str) -> Vec<CctvResult> {
+    TRACKERS.with(|map| {
+        let map = map.borrow();
+        if let Some(tracker) = map.get(&(role.to_string(), camera_id.to_string())) {
+            tracker
+                .tracks
+                .values()
+                .map(|t| CctvResult {
+                    track_id: t.track_id as i32,
+                    bbox: (t.bbox.x, t.bbox.y, t.bbox.width, t.bbox.height),
+                    hits: t.hits,
+                    age: t.age,
+                    person_id: t.person_id.map(|id| id as u64),
+                    name: None,
+                    roll_no: None,
+                    role: None,
+                    identified: t.person_id.is_some(),
+                    confidence: t.confidence as f64,
+                    mark_now: None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    })
 }
 
 pub fn clear_daily_rust() {
     clear_daily_records();
+}
+
+pub fn clear_camera(role: &str, camera_id: &str) {
+    TRACKERS.with(|map| {
+        map.borrow_mut()
+            .remove(&(role.to_string(), camera_id.to_string()));
+    });
 }

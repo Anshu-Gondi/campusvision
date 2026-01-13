@@ -1,18 +1,23 @@
 use anyhow::{anyhow, Result};
+use opencv::core::Ptr;
 use opencv::{
     core::{self, AlgorithmHint, Mat, Point2f, Rect, Scalar, Size, Vector},
     imgcodecs, imgproc,
     objdetect::FaceDetectorYN,
     prelude::*,
 };
+use std::cell::RefCell;
 use tch::Tensor;
+
+thread_local! {
+    static YUNET_CACHE: RefCell<Option<Ptr<FaceDetectorYN>>> = RefCell::new(None);
+}
 
 /// Target size for FaceNet / InsightFace embedding models
 const FACE_NET_SIZE: i32 = 160;
 
 /// Default YuNet model path (runtime file, NOT embedded)
-pub const DEFAULT_YUNET_MODEL_PATH: &str =
-    "models/face_detection_yunet_2023mar.onnx";
+pub const DEFAULT_YUNET_MODEL_PATH: &str = "models/face_detection_yunet_2023mar.onnx";
 
 /// Preprocess image bytes → normalized [1, 3, 160, 160] tensor ready for FaceNet
 /// This version DETECTS the face (calls YuNet), then aligns and returns the tensor.
@@ -127,7 +132,7 @@ pub fn detect_faces(
 ) -> Result<Mat> {
     let model_path = model_path.unwrap_or(DEFAULT_YUNET_MODEL_PATH);
 
-    // 1. Resize image to YuNet input size
+    // Resize input for YuNet
     let mut resized = Mat::default();
     imgproc::resize(
         mat,
@@ -138,44 +143,56 @@ pub fn detect_faces(
         imgproc::INTER_LINEAR,
     )?;
 
-    // 2. Create detector
-    let mut detector = FaceDetectorYN::create(
-        model_path,
-        "",
-        input_size,
-        score_threshold,
-        0.3,
-        5000,
-        0,
-        0,
-    )
-    .map_err(|e| anyhow!("Failed to create YuNet detector: {}", e))?;
+    YUNET_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
 
-    // 3. Detect on resized image
-    let mut faces = Mat::default();
-    detector
-        .detect(&resized, &mut faces)
-        .map_err(|e| anyhow!("YuNet detection failed: {}", e))?;
+        // Create ONCE per thread
+        if cache.is_none() {
+            let detector = FaceDetectorYN::create(
+                model_path,
+                "",
+                input_size,
+                score_threshold,
+                0.3,
+                5000,
+                0,
+                0,
+            )
+            .map_err(|e| anyhow!("Failed to create YuNet detector: {}", e))?;
 
-    // 4. Scale results back to original image size
-    let scale_x = mat.cols() as f32 / input_size.width as f32;
-    let scale_y = mat.rows() as f32 / input_size.height as f32;
-
-    for row in 0..faces.rows() {
-        // bbox
-        *faces.at_2d_mut::<f32>(row, 0)? *= scale_x;
-        *faces.at_2d_mut::<f32>(row, 1)? *= scale_y;
-        *faces.at_2d_mut::<f32>(row, 2)? *= scale_x;
-        *faces.at_2d_mut::<f32>(row, 3)? *= scale_y;
-
-        // landmarks (x, y)
-        for &col in &[4, 6, 8, 10, 12] {
-            *faces.at_2d_mut::<f32>(row, col)? *= scale_x;
-            *faces.at_2d_mut::<f32>(row, col + 1)? *= scale_y;
+            *cache = Some(detector);
         }
-    }
 
-    Ok(faces)
+        let detector = cache.as_mut().unwrap();
+
+        // Update input size dynamically
+        detector
+            .set_input_size(input_size)
+            .map_err(|e| anyhow!("Failed to set YuNet input size: {}", e))?;
+
+        let mut faces = Mat::default();
+        detector
+            .detect(&resized, &mut faces)
+            .map_err(|e| anyhow!("YuNet detection failed: {}", e))?;
+
+        // Scale boxes back to original image
+        let scale_x = mat.cols() as f32 / input_size.width as f32;
+        let scale_y = mat.rows() as f32 / input_size.height as f32;
+
+        for row in 0..faces.rows() {
+            *faces.at_2d_mut::<f32>(row, 0)? *= scale_x;
+            *faces.at_2d_mut::<f32>(row, 1)? *= scale_y;
+            *faces.at_2d_mut::<f32>(row, 2)? *= scale_x;
+            *faces.at_2d_mut::<f32>(row, 3)? *= scale_y;
+
+            for &col in &[4, 6, 8, 10, 12] {
+                *faces.at_2d_mut::<f32>(row, col)? *= scale_x;
+                *faces.at_2d_mut::<f32>(row, col + 1)? *= scale_y;
+            }
+        }
+
+        Ok(faces)
+    })
 }
 
 pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {

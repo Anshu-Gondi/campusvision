@@ -1,18 +1,19 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use crate::rust_only::cctv::logic::{process_frame_rust, get_tracked_faces_rust, clear_daily_rust};
+use crate::rust_only::cctv::logic::{process_frame_rust, get_tracked_faces_rust, clear_daily_rust, clear_camera};
 
 #[pyfunction]
 fn cctv_process_frame(
     frame_bytes: Vec<u8>,
     role: String,
+    camera_id: String,
     min_confidence: f32,
     min_track_hits: u32,
     model_path: Option<String>, // optional
 ) -> PyResult<PyObject> {
     Python::with_gil(|py| {
         let model_ref = model_path.as_deref(); // Option<String> -> Option<&str>
-        let results = process_frame_rust(&frame_bytes, &role, min_confidence, min_track_hits, model_ref)
+        let results = process_frame_rust(&frame_bytes, &role, &camera_id, min_confidence, min_track_hits, model_ref)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))?;
 
         let py_list = pyo3::types::PyList::empty(py);
@@ -37,9 +38,10 @@ fn cctv_process_frame(
 }
 
 #[pyfunction]
-fn cctv_get_tracked_faces(role: String) -> PyResult<PyObject> {
+fn cctv_get_tracked_faces(role: String, camera_id: String) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        let results = get_tracked_faces_rust(&role);
+        let results = get_tracked_faces_rust(&role, &camera_id);
+
         let py_list = PyList::empty(py);
         for r in results {
             let dict = PyDict::new(py);
@@ -62,9 +64,16 @@ fn cctv_clear_daily() -> PyResult<()> {
     Ok(())
 }
 
+#[pyfunction]
+fn cctv_clear_camera(role: String, camera_id: String) -> PyResult<()> {
+    clear_camera(&role, &camera_id);
+    Ok(())
+}
+
 pub fn register(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cctv_process_frame, m)?)?;
     m.add_function(wrap_pyfunction!(cctv_get_tracked_faces, m)?)?;
     m.add_function(wrap_pyfunction!(cctv_clear_daily, m)?)?;
+    m.add_function(wrap_pyfunction!(cctv_clear_camera, m)?)?;
     Ok(())
 }
