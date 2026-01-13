@@ -2,9 +2,13 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use crate::rust_only::detection::logic::*;
 
 #[pyfunction]
-fn detect_and_embed(image_bytes: Vec<u8>) -> PyResult<PyObject> {
+fn detect_and_embed(
+    image_bytes: Vec<u8>,
+    model_path: Option<String>, // optional
+) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        let result = detect_and_embed_rust(&image_bytes)
+        let model_ref = model_path.as_deref(); // convert Option<String> -> Option<&str>
+        let result = detect_and_embed_rust(&image_bytes, model_ref)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let dict = PyDict::new(py);

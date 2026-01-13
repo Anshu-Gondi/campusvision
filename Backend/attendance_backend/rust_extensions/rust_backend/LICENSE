@@ -1,3 +1,5 @@
+# Document Heading
+
 All Rights Reserved.
 
 Copyright (c) 2025 Anshu-Gondi
@@ -8,6 +10,7 @@ This software and associated documentation files (the "Software") are the exclus
 (Anshu-Gondi). All rights are reserved.
 
 You may NOT, without prior written permission from the copyright owner:
+
 - copy, reproduce, distribute, publish, sell, rent, lease, sublicense, or otherwise transfer the Software;
 - modify, adapt, translate, create derivative works of, decompile, reverse engineer, disassemble, or otherwise attempt
   to derive the source code of the Software;
@@ -15,17 +18,20 @@ You may NOT, without prior written permission from the copyright owner:
   permitted by the copyright owner.
 
 Permitted use:
+
 - End users are permitted to use the Software only as provided by the owner, e.g., using a hosted service or running
   a copy of the Software under terms explicitly granted by the owner.
 - Any other use (including modification, redistribution, or incorporation into other software or services) requires
   a separate written license from the copyright owner.
 
 Requesting permission / licensing inquiries:
+
 - To request permission to use, modify, or distribute this Software, contact the owner:
-  https://github.com/Anshu-Gondi
+  <https://github.com/Anshu-Gondi>
   (You may also open an issue in this repository to start a licensing discussion.)
 
 No warranty:
+
 - THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
   THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
   COPYRIGHT OWNER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,

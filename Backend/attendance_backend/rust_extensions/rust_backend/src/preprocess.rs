@@ -1,8 +1,7 @@
 use anyhow::{anyhow, Result};
 use opencv::{
-    core::{self, Mat, Point2f, Rect, Scalar, Size, Vector, AlgorithmHint},
-    imgcodecs,
-    imgproc,
+    core::{self, AlgorithmHint, Mat, Point2f, Rect, Scalar, Size, Vector},
+    imgcodecs, imgproc,
     objdetect::FaceDetectorYN,
     prelude::*,
 };
@@ -10,7 +9,10 @@ use tch::Tensor;
 
 /// Target size for FaceNet / InsightFace embedding models
 const FACE_NET_SIZE: i32 = 160;
-const YUNET_MODEL_PATH: &str = "models/face_detection_yunet_2023mar.onnx";
+
+/// Default YuNet model path (runtime file, NOT embedded)
+pub const DEFAULT_YUNET_MODEL_PATH: &str =
+    "models/face_detection_yunet_2023mar.onnx";
 
 /// Preprocess image bytes → normalized [1, 3, 160, 160] tensor ready for FaceNet
 /// This version DETECTS the face (calls YuNet), then aligns and returns the tensor.
@@ -24,7 +26,7 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
 
     // 2. Detect faces with YuNet
     let input_size = Size::new(320, 320); // speed/accuracy trade-off
-    let faces = detect_faces(&mat, YUNET_MODEL_PATH, input_size, 0.6)?;
+    let faces = detect_faces(&mat, None, input_size, 0.6)?;
     let best = pick_best_face(&faces)?.ok_or_else(|| anyhow!("No face detected"))?;
     let (face_rect, landmarks) = best;
 
@@ -33,7 +35,11 @@ pub fn preprocess_image(image_bytes: &[u8]) -> Result<Tensor> {
 
 /// Preprocess given an already-detected face rectangle + landmarks on the original Mat.
 /// This is used to avoid double detection when you already detected faces (detect_and_embed).
-pub fn preprocess_from_mat_and_landmarks(mat: &Mat, mut face_rect: Rect, landmarks: &[Point2f]) -> Result<Tensor> {
+pub fn preprocess_from_mat_and_landmarks(
+    mat: &Mat,
+    mut face_rect: Rect,
+    landmarks: &[Point2f],
+) -> Result<Tensor> {
     // 1. Clamp bounding box to image bounds
     let img_w = mat.cols();
     let img_h = mat.rows();
@@ -61,7 +67,7 @@ pub fn preprocess_from_mat_and_landmarks(mat: &Mat, mut face_rect: Rect, landmar
 
     // 4. Desired eye positions in the final 160×160 image
     let desired_right_eye = Point2f::new(48.0, 48.0);
-    let desired_left_eye  = Point2f::new(112.0, 48.0);
+    let desired_left_eye = Point2f::new(112.0, 48.0);
 
     // 5. Compute affine transform to align eyes
     let src_points = vec![eye_right, eye_left];
@@ -85,7 +91,13 @@ pub fn preprocess_from_mat_and_landmarks(mat: &Mat, mut face_rect: Rect, landmar
 
     // 7. Convert BGR → RGB
     let mut rgb = Mat::default();
-    imgproc::cvt_color(&aligned, &mut rgb, imgproc::COLOR_BGR2RGB, 0, AlgorithmHint::ALGO_HINT_DEFAULT)?;
+    imgproc::cvt_color(
+        &aligned,
+        &mut rgb,
+        imgproc::COLOR_BGR2RGB,
+        0,
+        AlgorithmHint::ALGO_HINT_DEFAULT,
+    )?;
 
     // 8. Convert to tch::Tensor and normalize for FaceNet
     // Ensure data exist
@@ -109,19 +121,21 @@ pub fn preprocess_from_mat_and_landmarks(mat: &Mat, mut face_rect: Rect, landmar
 
 pub fn detect_faces(
     mat: &Mat,
-    model_path: &str,
+    model_path: Option<&str>,
     input_size: Size,
     score_threshold: f32,
 ) -> Result<Mat> {
+    let model_path = model_path.unwrap_or(DEFAULT_YUNET_MODEL_PATH);
+
     let mut detector = FaceDetectorYN::create(
         model_path,
-        "",                    // config (empty for ONNX)
+        "", // config (empty for ONNX)
         input_size,
         score_threshold,
-        0.3,   // nms_threshold
-        5000,  // top_k
-        0,     // backend_id (default)
-        0,     // target_id (default)
+        0.3,  // nms_threshold
+        5000, // top_k
+        0,    // backend_id (default)
+        0,    // target_id (default)
     )
     .map_err(|e| anyhow!("Failed to create YuNet detector: {}", e))?;
 

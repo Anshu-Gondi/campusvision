@@ -6,7 +6,6 @@ requires-python = ">=3.10"
 dependencies = []
 license = { file = "LICENSE" }
 readme = "README.md"
-data = [{ path = "README.md" }]
 
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
@@ -18,6 +17,11 @@ features = ["pyo3/extension-module"]
 binding = "pyo3"
 module-name = "rust_backend"        # <-- change this to your actual lib.rs module name
 strip = true
+include = [
+    { path = "README.md", format = "sdist" },      # only sdist
+    { path = "USAGE.md",  format = "wheel"  },     # only wheel
+    { path = "docs/**",   format = "sdist"  },
+]
 
 # Auto-download + bundle libtorch CPU (2.8.0)
 [tool.maturin.libtorch]

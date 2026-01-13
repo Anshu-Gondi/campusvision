@@ -1,16 +1,15 @@
 # Rust Backend Extension – Usage Guide for Python Developers
 
-This guide explains how to install and use the high-performance Rust backend (exposed via PyO3) in your Python projects.  
-The extension provides fast face detection, recognition, tracking, enrollment, duplicate checking, database persistence, class scheduling, and utility functions for a real-time face recognition attendance system.
+This guide explains how to install and use the high-performance Rust backend (exposed via PyO3) in your Python projects.The extension provides fast face detection, recognition, tracking, enrollment, duplicate checking, database persistence, class scheduling, and utility functions for a real-time face recognition attendance system.
 
-> **Module name**: The imported Python module name is defined in `Cargo.toml` under `[lib] name = "..."`.  
+> **Module name**: The imported Python module name is defined in `Cargo.toml` under `[lib] name = "..."`.
 > In this guide we use `rust_backend`. Replace it with your actual module name if different.
 
 ## Table of Contents
 
 - [Installation](#installation)
 - [CCTV Real-Time Processing](#cctv-real-time-processing)
-- [Face Recognition & Enrollment](#face-recognition--enrollment)
+- [Face Recognition &amp; Enrollment](#face-recognition--enrollment)
 - [Database Management](#database-management)
 - [Class Scheduling](#class-scheduling)
 - [Utilities](#utilities)
@@ -19,8 +18,9 @@ The extension provides fast face detection, recognition, tracking, enrollment, d
 ## Installation
 
 ### Prerequisites
+
 - Python 3.8 or higher
-- Rust toolchain (install via https://rustup.rs)
+- Rust toolchain (install via [https://rustup.rs](https://rustup.rs))
 - Maturin: `pip install maturin`
 
 ### Build and Install
@@ -49,13 +49,14 @@ import rust_backend
 
 Processes a single video frame for detection, recognition, and tracking.
 
-**Parameters**
+## Parameters
+
 - `frame_bytes`: JPEG-encoded image bytes (e.g., from OpenCV)
 - `role`: `"student"` or `"teacher"`
 - `min_confidence`: Minimum similarity threshold for identification (typical: 0.6)
 - `min_track_hits`: Minimum consecutive detections before trusting a track (typical: 5)
 
-**Returns**  
+**Returns**
 List of dictionaries, each containing:
 
 ```python
@@ -74,7 +75,7 @@ List of dictionaries, each containing:
 }
 ```
 
-**Example**
+## Example
 
 ```python
 import cv2
@@ -131,7 +132,7 @@ Returns top-k similar person IDs across **all** roles (global duplicate detectio
 
 Checks for duplicates during registration.
 
-**Returns**
+## Returns
 
 ```python
 {
@@ -178,7 +179,7 @@ Greedy algorithm.
 
 Beam search (generally better quality, slightly slower).
 
-**Input format**
+## Input format
 
 ```python
 classes = [
@@ -193,7 +194,7 @@ classes = [
 ]
 ```
 
-**Output format**
+## Output format
 
 ```python
 {
@@ -208,7 +209,7 @@ classes = [
 }
 ```
 
-**Example**
+## Example
 
 ```python
 assignments = rust_backend.schedule_classes_beam(classes)
@@ -254,5 +255,3 @@ else:
 This Rust extension delivers **blazing-fast**, production-ready face recognition capabilities directly from Python.
 
 Happy coding! 🚀
-
-

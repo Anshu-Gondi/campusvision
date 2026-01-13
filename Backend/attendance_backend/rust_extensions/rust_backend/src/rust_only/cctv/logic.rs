@@ -3,15 +3,13 @@ use crate::cctv_tracker::FaceTracker;
 use crate::hnsw_helper;
 use crate::preprocess;
 use once_cell::sync::Lazy;
-use opencv::core::{Point2f, Rect, Size, Vector};
+use opencv::core::{Size, Vector};
 use opencv::imgcodecs;
 use opencv::prelude::MatTraitConst;
 use std::sync::Mutex;
 
-static STUDENT_TRACKER: Lazy<Mutex<FaceTracker>> =
-    Lazy::new(|| Mutex::new(FaceTracker::new(30)));
-static TEACHER_TRACKER: Lazy<Mutex<FaceTracker>> =
-    Lazy::new(|| Mutex::new(FaceTracker::new(30)));
+static STUDENT_TRACKER: Lazy<Mutex<FaceTracker>> = Lazy::new(|| Mutex::new(FaceTracker::new(30)));
+static TEACHER_TRACKER: Lazy<Mutex<FaceTracker>> = Lazy::new(|| Mutex::new(FaceTracker::new(30)));
 
 #[derive(Clone)]
 pub struct CctvResult {
@@ -33,23 +31,18 @@ pub fn process_frame_rust(
     role: &str,
     min_confidence: f32,
     min_track_hits: u32,
+    model_path: Option<&str>, // NEW optional argument
 ) -> anyhow::Result<Vec<CctvResult>> {
     if !["student", "teacher"].contains(&role) {
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
-    let mat =
-        imgcodecs::imdecode(&Vector::from_slice(frame_bytes), imgcodecs::IMREAD_COLOR)?;
+    let mat = imgcodecs::imdecode(&Vector::from_slice(frame_bytes), imgcodecs::IMREAD_COLOR)?;
     if mat.empty() {
         return Ok(Vec::new());
     }
 
-    let faces = preprocess::detect_faces(
-        &mat,
-        "models/face_detection_yunet_2023mar.onnx",
-        Size::new(320, 320),
-        0.5,
-    )?;
+    let faces = preprocess::detect_faces(&mat, model_path, Size::new(320, 320), 0.5)?;
 
     let mut detections = Vec::new();
     for row in 0..faces.rows() {
@@ -58,7 +51,7 @@ pub fn process_frame_rust(
             continue;
         }
 
-        let bbox = Rect::new(
+        let bbox = opencv::core::Rect::new(
             *faces.at_2d::<f32>(row, 0)? as i32,
             *faces.at_2d::<f32>(row, 1)? as i32,
             *faces.at_2d::<f32>(row, 2)? as i32,
@@ -67,14 +60,13 @@ pub fn process_frame_rust(
 
         let mut landmarks = Vec::with_capacity(5);
         for &col in &[4, 6, 8, 10, 12] {
-            landmarks.push(Point2f::new(
+            landmarks.push(opencv::core::Point2f::new(
                 *faces.at_2d::<f32>(row, col)?,
                 *faces.at_2d::<f32>(row, col + 1)?,
             ));
         }
 
-        let tensor =
-            preprocess::preprocess_from_mat_and_landmarks(&mat, bbox, &landmarks)?;
+        let tensor = preprocess::preprocess_from_mat_and_landmarks(&mat, bbox, &landmarks)?;
         detections.push((bbox, landmarks, tensor));
     }
 
@@ -83,12 +75,11 @@ pub fn process_frame_rust(
     } else {
         &STUDENT_TRACKER
     };
-
     let mut tracker = tracker_mutex.lock().unwrap();
     let tracks = tracker.update(detections);
 
+    // build CctvResult as before
     let mut results = Vec::new();
-
     for track in tracks {
         let mut result = CctvResult {
             track_id: track.track_id as i32,
@@ -109,7 +100,7 @@ pub fn process_frame_rust(
             mark_now: None,
         };
 
-        // 🔍 Identification
+        // 🔍 Identification logic remains the same
         if track.person_id.is_none() && track.hits >= min_track_hits {
             if let Some((internal_id, sim)) =
                 hnsw_helper::search_in_role(&track.embedding, role, 1).first()
@@ -117,7 +108,6 @@ pub fn process_frame_rust(
                 if *sim >= min_confidence {
                     if let Some(meta) = hnsw_helper::get_metadata(*internal_id) {
                         let public_id = *internal_id as u64;
-
                         result.person_id = Some(public_id);
                         result.name = Some(meta.name.clone());
                         result.roll_no = Some(meta.roll_no.clone());
@@ -125,8 +115,7 @@ pub fn process_frame_rust(
                         result.confidence = *sim as f64;
                         result.identified = true;
 
-                        let should_mark =
-                            !is_already_marked_today(role, *internal_id);
+                        let should_mark = !is_already_marked_today(role, *internal_id);
                         result.mark_now = Some(should_mark);
 
                         if should_mark {
@@ -136,11 +125,9 @@ pub fn process_frame_rust(
                 }
             }
         }
-        // ♻️ Already identified track
+        // Already identified tracks logic
         else if let Some(internal_id) = track.person_id {
-            if let Some(meta) =
-                hnsw_helper::get_metadata(internal_id)
-            {
+            if let Some(meta) = hnsw_helper::get_metadata(internal_id) {
                 result.person_id = Some(internal_id as u64);
                 result.name = Some(meta.name.clone());
                 result.roll_no = Some(meta.roll_no.clone());

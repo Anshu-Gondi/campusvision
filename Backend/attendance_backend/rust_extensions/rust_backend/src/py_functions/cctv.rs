@@ -3,14 +3,21 @@ use pyo3::types::{PyDict, PyList};
 use crate::rust_only::cctv::logic::{process_frame_rust, get_tracked_faces_rust, clear_daily_rust};
 
 #[pyfunction]
-fn cctv_process_frame(frame_bytes: Vec<u8>, role: String, min_confidence: f32, min_track_hits: u32) -> PyResult<PyObject> {
+fn cctv_process_frame(
+    frame_bytes: Vec<u8>,
+    role: String,
+    min_confidence: f32,
+    min_track_hits: u32,
+    model_path: Option<String>, // optional
+) -> PyResult<PyObject> {
     Python::with_gil(|py| {
-        let results = process_frame_rust(&frame_bytes, &role, min_confidence, min_track_hits)
+        let model_ref = model_path.as_deref(); // Option<String> -> Option<&str>
+        let results = process_frame_rust(&frame_bytes, &role, min_confidence, min_track_hits, model_ref)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))?;
 
-        let py_list = PyList::empty(py);
+        let py_list = pyo3::types::PyList::empty(py);
         for r in results {
-            let dict = PyDict::new(py);
+            let dict = pyo3::types::PyDict::new(py);
             dict.set_item("track_id", r.track_id)?;
             dict.set_item("bbox", r.bbox)?;
             dict.set_item("hits", r.hits)?;

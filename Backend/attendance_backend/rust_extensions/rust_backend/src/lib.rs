@@ -17,5 +17,6 @@ use py_functions::add_functions;
 
 #[pymodule]
 fn rust_backend(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    add_functions(m)
+    add_functions(m)?;
+    Ok(())
 }

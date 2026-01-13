@@ -1,12 +1,9 @@
 use crate::{
+    hnsw_helper,
     models::{ort_model, tch_model},
     preprocess,
-    hnsw_helper,
 };
-use opencv::{
-    core::Size,
-    imgcodecs,
-};
+use opencv::{core::Size, imgcodecs};
 
 #[derive(Debug)]
 pub struct DetectionResult {
@@ -15,29 +12,20 @@ pub struct DetectionResult {
     pub embedding: Option<Vec<f32>>,
 }
 
-pub fn detect_and_embed_rust(image_bytes: &[u8]) -> anyhow::Result<DetectionResult> {
-    // Decode image
+pub fn detect_and_embed_rust(
+    image_bytes: &[u8],
+    model_path: Option<&str>, // optional
+) -> anyhow::Result<DetectionResult> {
     let mat = imgcodecs::imdecode(
         &opencv::core::Vector::from_slice(image_bytes),
         imgcodecs::IMREAD_COLOR,
     )?;
 
-    // Detect faces
-    let faces = preprocess::detect_faces(
-        &mat,
-        "models/face_detection_yunet_2023mar.onnx",
-        Size::new(320, 320),
-        0.6,
-    )?;
-
+    let faces = preprocess::detect_faces(&mat, model_path, Size::new(320, 320), 0.6)?;
     let best = preprocess::pick_best_face(&faces)?;
 
     if let Some((rect, landmarks)) = best {
-        // Preprocess tensor
-        let tensor =
-            preprocess::preprocess_from_mat_and_landmarks(&mat, rect, &landmarks)?;
-
-        // Run embedding model
+        let tensor = preprocess::preprocess_from_mat_and_landmarks(&mat, rect, &landmarks)?;
         let embedding = match tch_model::run_face_model(&tensor) {
             Ok(v) => v,
             Err(_) => ort_model::run_face_model_onnx(&tensor)?,
@@ -68,7 +56,7 @@ pub fn detect_and_add_person_rust(
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
-    let result = detect_and_embed_rust(image_bytes)?;
+    let result = detect_and_embed_rust(image_bytes, None)?;
 
     if !result.found {
         anyhow::bail!("No face detected");
@@ -76,13 +64,7 @@ pub fn detect_and_add_person_rust(
 
     let embedding = result.embedding.expect("embedding missing");
 
-    let id = hnsw_helper::add_face_embedding(
-        embedding,
-        name,
-        person_id,
-        roll_no,
-        role,
-    )?;
+    let id = hnsw_helper::add_face_embedding(embedding, name, person_id, roll_no, role)?;
 
     Ok(id)
 }
