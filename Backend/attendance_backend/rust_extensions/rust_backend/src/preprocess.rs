@@ -127,22 +127,53 @@ pub fn detect_faces(
 ) -> Result<Mat> {
     let model_path = model_path.unwrap_or(DEFAULT_YUNET_MODEL_PATH);
 
+    // 1. Resize image to YuNet input size
+    let mut resized = Mat::default();
+    imgproc::resize(
+        mat,
+        &mut resized,
+        input_size,
+        0.0,
+        0.0,
+        imgproc::INTER_LINEAR,
+    )?;
+
+    // 2. Create detector
     let mut detector = FaceDetectorYN::create(
         model_path,
-        "", // config (empty for ONNX)
+        "",
         input_size,
         score_threshold,
-        0.3,  // nms_threshold
-        5000, // top_k
-        0,    // backend_id (default)
-        0,    // target_id (default)
+        0.3,
+        5000,
+        0,
+        0,
     )
     .map_err(|e| anyhow!("Failed to create YuNet detector: {}", e))?;
 
+    // 3. Detect on resized image
     let mut faces = Mat::default();
     detector
-        .detect(mat, &mut faces)
+        .detect(&resized, &mut faces)
         .map_err(|e| anyhow!("YuNet detection failed: {}", e))?;
+
+    // 4. Scale results back to original image size
+    let scale_x = mat.cols() as f32 / input_size.width as f32;
+    let scale_y = mat.rows() as f32 / input_size.height as f32;
+
+    for row in 0..faces.rows() {
+        // bbox
+        *faces.at_2d_mut::<f32>(row, 0)? *= scale_x;
+        *faces.at_2d_mut::<f32>(row, 1)? *= scale_y;
+        *faces.at_2d_mut::<f32>(row, 2)? *= scale_x;
+        *faces.at_2d_mut::<f32>(row, 3)? *= scale_y;
+
+        // landmarks (x, y)
+        for &col in &[4, 6, 8, 10, 12] {
+            *faces.at_2d_mut::<f32>(row, col)? *= scale_x;
+            *faces.at_2d_mut::<f32>(row, col + 1)? *= scale_y;
+        }
+    }
 
     Ok(faces)
 }

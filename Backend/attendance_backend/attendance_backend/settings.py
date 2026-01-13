@@ -146,6 +146,13 @@ AWS_DEFAULT_ACL = None
 
 MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
 
+# ====================== YUNET MODEL PATH (OPTIONAL) ======================
+
+YUNET_MODEL_PATH = BASE_DIR / "rust_extensions" / "rust_backend" / "models" / "face_detection_yunet_2023mar.onnx"
+
+# Convert to string for PyO3
+YUNET_MODEL_PATH = str(YUNET_MODEL_PATH) if YUNET_MODEL_PATH.exists() else None
+
 # ===================================================
 
 # Password validation
