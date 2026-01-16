@@ -1,8 +1,28 @@
 use crate::hnsw_helper::{get_metadata, search_in_role};
 use chrono::NaiveTime;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
+
+const MAX_SUBJECT_CACHE: usize = 256;
+
+#[derive(Clone)]
+pub struct ScheduleLimits {
+    pub max_duration: Duration, // hard timeout
+    pub max_expansions: usize,  // DFS expansion limit
+    pub max_depth: usize,       // recursion bound
+}
+
+impl Default for ScheduleLimits {
+    fn default() -> Self {
+        Self {
+            max_duration: Duration::from_millis(200), // Django-safe
+            max_expansions: 25_000,
+            max_depth: 64,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ClassRequest {
@@ -94,6 +114,12 @@ impl CandidateCache {
         let embedding = hash_to_embedding(subject, self.dim);
         let hits = search_in_role(&embedding, "teacher", k);
         // store and return
+        if self.map.len() >= MAX_SUBJECT_CACHE {
+            // simple eviction: remove a random key (not LRU, but simple)
+            if let Some(first_key) = self.map.keys().next().cloned() {
+                self.map.remove(&first_key);
+            }
+        }
         self.map.insert(subject.to_string(), hits.clone());
         hits
     }
@@ -166,6 +192,8 @@ pub struct FullScheduler {
     pub teacher_timetable: HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
     // small cache embedded in scheduler instance
     pub cache: CandidateCache,
+    start_time: Instant,
+    expansions: usize,
 }
 
 impl FullScheduler {
@@ -174,6 +202,8 @@ impl FullScheduler {
             teacher_workload: HashMap::new(),
             teacher_timetable: HashMap::new(),
             cache: CandidateCache::new(embedding_dim),
+            start_time: Instant::now(),
+            expansions: 0,
         }
     }
 
@@ -189,18 +219,59 @@ impl FullScheduler {
         best
     }
 
-    fn search(
+    pub fn assign_classes_limited(
+        &mut self,
+        classes: &[ClassRequest],
+        limits: &ScheduleLimits,
+    ) -> Vec<Assignment> {
+        self.teacher_workload.clear();
+        self.teacher_timetable.clear();
+        self.start_time = Instant::now();
+        self.expansions = 0;
+
+        let mut ordered = classes.to_vec();
+        ordered.sort_by_key(|c| c.start_time);
+
+        let mut current = Vec::new();
+        let mut best = Vec::new();
+        let mut best_score = -1.0;
+
+        self.search_limited(
+            &ordered,
+            0,
+            &mut current,
+            &mut best,
+            &mut best_score,
+            limits,
+        );
+
+        best
+    }
+
+    fn search_limited(
         &mut self,
         classes: &[ClassRequest],
         index: usize,
         current: &mut Vec<Assignment>,
         best: &mut Vec<Assignment>,
         best_score: &mut f32,
+        limits: &ScheduleLimits,
     ) {
-        if index == classes.len() {
-            let total_score = Self::compute_schedule_score(current);
-            if total_score > *best_score {
-                *best_score = total_score;
+        // ⏱ timeout
+        if self.start_time.elapsed() > limits.max_duration {
+            return;
+        }
+
+        // 🔢 expansion guard
+        self.expansions += 1;
+        if self.expansions > limits.max_expansions {
+            return;
+        }
+
+        if index == classes.len() || index >= limits.max_depth {
+            let score = Self::compute_schedule_score(current);
+            if score > *best_score {
+                *best_score = score;
                 *best = current.clone();
             }
             return;
@@ -208,37 +279,37 @@ impl FullScheduler {
 
         let class = &classes[index];
 
-        // fetch candidates but filter by availability using current global timetable
         let candidates = self.cache.filtered_candidates(
             &class.subject,
-            30, // ask HNSW for top-30 ranking
+            30,
             &self.teacher_workload,
             &self.teacher_timetable,
             class,
-            6,  // take top-6 available
+            6,
         );
 
-        // improved optimistic bound using best candidate for each remaining slot
         let current_score = Self::compute_schedule_score(current);
-        let best_candidate_score = candidates.first().map(|c| c.reliability * c.similarity).unwrap_or(0.0);
-        let remaining = (classes.len() - index) as f32;
-        let max_future = remaining * best_candidate_score;
+        let optimistic = candidates
+            .first()
+            .map(|c| c.reliability * c.similarity)
+            .unwrap_or(0.0)
+            * (classes.len() - index) as f32;
 
-        if current_score + max_future <= *best_score {
+        if current_score + optimistic <= *best_score {
             return;
         }
 
         for mut teacher in candidates {
-            // time_conflict check redundant here because we filtered, but keep defensive
             if self.time_conflict(teacher.id, class) {
                 continue;
             }
 
             *self.teacher_workload.entry(teacher.id).or_insert(0) += 1;
             teacher.workload = self.teacher_workload[&teacher.id];
+
             self.teacher_timetable
                 .entry(teacher.id)
-                .or_insert(vec![])
+                .or_default()
                 .push((class.start_time, class.end_time));
 
             current.push(Assignment {
@@ -246,24 +317,22 @@ impl FullScheduler {
                 teacher: teacher.clone(),
             });
 
-            self.search(classes, index + 1, current, best, best_score);
+            self.search_limited(classes, index + 1, current, best, best_score, limits);
 
-            // backtrack
             current.pop();
-            if let Some(w) = self.teacher_workload.get_mut(&teacher.id) { *w -= 1; }
-            if let Some(slots) = self.teacher_timetable.get_mut(&teacher.id) {
-                if let Some(pos) = slots.iter().position(|&(s,e)| s == class.start_time && e == class.end_time) {
-                    slots.remove(pos);
-                }
-            }
+            *self.teacher_workload.get_mut(&teacher.id).unwrap() -= 1;
+            self.teacher_timetable.get_mut(&teacher.id).unwrap().pop();
         }
     }
 
     fn compute_schedule_score(assignments: &[Assignment]) -> f32 {
-        assignments.iter().map(|a| {
-            let w = a.teacher.workload.max(1) as f32;
-            a.teacher.reliability * a.teacher.similarity / (1.0 + w.ln())
-        }).sum()
+        assignments
+            .iter()
+            .map(|a| {
+                let w = a.teacher.workload.max(1) as f32;
+                a.teacher.reliability * a.teacher.similarity / (1.0 + w.ln())
+            })
+            .sum()
     }
 
     fn time_conflict(&self, teacher_id: usize, class: &ClassRequest) -> bool {
@@ -279,10 +348,10 @@ impl FullScheduler {
 }
 
 /* ----------------------------
-   Graph-AH / Beam-search scheduler (fast & practical)
-   Uses CandidateCache::filtered_candidates so each beam state only
-   considers teachers that are free in that state's timetable.
-   ----------------------------*/
+Graph-AH / Beam-search scheduler (fast & practical)
+Uses CandidateCache::filtered_candidates so each beam state only
+considers teachers that are free in that state's timetable.
+----------------------------*/
 pub struct GraphScheduler {
     pub teacher_workload: HashMap<usize, usize>,
     pub teacher_timetable: HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
@@ -293,10 +362,16 @@ pub struct GraphScheduler {
 
 #[derive(Clone)]
 struct BeamState {
-    pub assignments: Vec<Assignment>,
-    pub workload: HashMap<usize, usize>,
+    pub assignments: Vec<AssignmentIdx>,
+    pub workload: HashMap<usize, u16>,
     pub timetable: HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
     pub score: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AssignmentIdx {
+    class_idx: usize,
+    teacher_id: usize,
 }
 
 impl GraphScheduler {
@@ -311,88 +386,102 @@ impl GraphScheduler {
     }
 
     pub fn assign_classes_beam(&mut self, classes: &[ClassRequest]) -> Vec<Assignment> {
-        if classes.is_empty() { return vec![]; }
+        let mut ordered: Vec<usize> = (0..classes.len()).collect();
+        ordered.sort_by_key(|&i| classes[i].start_time);
 
-        // order by time as before
-        let mut ordered = classes.to_vec();
-        ordered.sort_by_key(|c| c.start_time);
-
-        // initial beam: empty state
-        let initial = BeamState {
-            assignments: vec![],
+        let mut beam = vec![BeamState {
+            assignments: Vec::with_capacity(classes.len()),
             workload: HashMap::new(),
             timetable: HashMap::new(),
             score: 0.0,
-        };
-        let mut beam = vec![initial];
+        }];
 
-        for (_idx, class) in ordered.iter().enumerate() {
-            let mut next_beam: Vec<BeamState> = Vec::new();
+        for &class_idx in &ordered {
+            let class = &classes[class_idx];
+            let mut next_beam = Vec::with_capacity(self.beam_width * 4);
 
-            for state in beam.into_iter() {
-                // Now fetch ranked teachers, then filter by this state's timetable & workload
+            for state in beam.iter() {
                 let candidates = self.cache.filtered_candidates(
                     &class.subject,
-                    30, // ask HNSW top-30
+                    30,
                     &state.workload,
                     &state.timetable,
                     class,
-                    6,  // take top-6 available for expansion
+                    6,
                 );
 
-                for mut cand in candidates.into_iter() {
-                    // compute incremental score for assigning this teacher
-                    let current_w = *state.workload.get(&cand.id).unwrap_or(&0);
-                    let new_w = current_w + 1;
-                    let base_score = cand.reliability * cand.similarity / (1.0 + (new_w.max(1) as f32).ln());
-                    // fairness penalty (small): prefer teachers with lower workload
-                    let fairness = 1.0 - (current_w as f32 * self.fairness_penalty);
+                for cand in candidates {
+                    if time_conflict(&state.timetable, cand.id, class) {
+                        continue;
+                    }
 
-                    let inc = base_score * fairness.max(0.0);
+                    let mut new_state = BeamState {
+                        assignments: state.assignments.clone(), // small Vec<AssignmentIdx>
+                        workload: state.workload.clone(),
+                        timetable: state.timetable.clone(),
+                        score: state.score,
+                    };
 
-                    // build new state
-                    let mut new_state = state.clone();
-                    new_state.assignments.push(Assignment {
-                        class: class.clone(),
-                        teacher: {
-                            cand.workload = new_w;
-                            cand.clone()
-                        },
-                    });
+                    let w = *new_state.workload.get(&cand.id).unwrap_or(&0) + 1;
+                    new_state.workload.insert(cand.id, w);
+                    new_state
+                        .timetable
+                        .entry(cand.id)
+                        .or_default()
+                        .push((class.start_time, class.end_time));
 
-                    // update workload & timetable
-                    *new_state.workload.entry(cand.id).or_insert(0) += 1;
-                    new_state.timetable.entry(cand.id).or_insert(vec![]).push((class.start_time, class.end_time));
-
+                    let inc = cand.reliability * cand.similarity / (1.0 + (w as f32).ln());
                     new_state.score += inc;
 
+                    new_state.assignments.push(AssignmentIdx {
+                        class_idx,
+                        teacher_id: cand.id,
+                    });
+
                     next_beam.push(new_state);
-                } // end for each candidate
+                }
+            }
 
-            } // end for each state in beam
-
-            // prune beam: keep top-k by score
             next_beam.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             next_beam.truncate(self.beam_width);
 
             beam = next_beam;
-            if beam.is_empty() { break; } // no feasible assignments for this class
-        } // end for classes
-
-        // beam now contains partial/full schedules; pick best complete (by score & count)
-        let best = beam.into_iter().max_by(|a, b| {
-            let cmp = a.score.partial_cmp(&b.score).unwrap();
-            if cmp == std::cmp::Ordering::Equal {
-                a.assignments.len().cmp(&b.assignments.len())
-            } else {
-                cmp
+            if beam.is_empty() {
+                break;
             }
+        }
+
+        self.resolve_assignments(&beam, classes)
+    }
+
+    fn resolve_assignments(&self, beam: &[BeamState], classes: &[ClassRequest]) -> Vec<Assignment> {
+        let best = beam.iter().max_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap()
+                .then(a.assignments.len().cmp(&b.assignments.len()))
         });
 
-        if let Some(s) = best {
-            return s.assignments;
-        }
-        vec![]
+        let Some(state) = best else { return vec![] };
+
+        state
+            .assignments
+            .iter()
+            .filter_map(|a| {
+                let meta = get_metadata(a.teacher_id)?;
+                Some(Assignment {
+                    class: classes[a.class_idx].clone(), // one-time clone
+                    teacher: TeacherCandidate {
+                        id: a.teacher_id,
+                        name: meta.name.clone(),
+                        reliability: meta.reliability.unwrap_or(0.8),
+                        workload: 0,
+                        similarity: 0.0,
+                        timetable: vec![],
+                    },
+                })
+            })
+            .collect()
     }
 }
 

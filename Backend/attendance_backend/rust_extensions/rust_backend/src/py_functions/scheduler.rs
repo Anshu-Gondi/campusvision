@@ -2,9 +2,7 @@ use chrono::NaiveTime;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 use crate::rust_only::scheduler::logic::{
-    PyClassInput,
-    schedule_classes_rust,
-    schedule_classes_beam_rust,
+    schedule_classes_beam_rust, schedule_classes_rust, PyClassInput,
 };
 
 fn parse_classes(py: Python, py_classes: Vec<PyObject>) -> PyResult<Vec<PyClassInput>> {
@@ -36,12 +34,12 @@ fn parse_classes(py: Python, py_classes: Vec<PyObject>) -> PyResult<Vec<PyClassI
 
 #[pyfunction]
 pub fn schedule_classes(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
+    let inputs = Python::with_gil(|py| parse_classes(py, py_classes))?;
+
+    let results = Python::with_gil(|py| py.allow_threads(|| schedule_classes_rust(inputs)));
+
     Python::with_gil(|py| {
-        let inputs = parse_classes(py, py_classes)?;
-        let results = schedule_classes_rust(inputs);
-
         let py_list = pyo3::types::PyList::empty(py);
-
         for r in results {
             let d = PyDict::new(py);
             d.set_item("class_name", r.class_name)?;
@@ -54,17 +52,20 @@ pub fn schedule_classes(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
             d.set_item("workload", r.workload)?;
             py_list.append(d)?;
         }
-
         Ok(py_list.to_object(py))
     })
 }
 
 #[pyfunction]
 pub fn schedule_classes_beam(py_classes: Vec<PyObject>) -> PyResult<PyObject> {
-    Python::with_gil(|py| {
-        let inputs = parse_classes(py, py_classes)?;
-        let results = schedule_classes_beam_rust(inputs);
+    // 1️⃣ Parse Python → Rust (GIL REQUIRED)
+    let inputs = Python::with_gil(|py| parse_classes(py, py_classes))?;
 
+    // 2️⃣ Run heavy scheduler WITHOUT GIL
+    let results = Python::with_gil(|py| py.allow_threads(|| schedule_classes_beam_rust(inputs)));
+
+    // 3️⃣ Convert Rust → Python (GIL REQUIRED)
+    Python::with_gil(|py| {
         let py_list = pyo3::types::PyList::empty(py);
 
         for r in results {
