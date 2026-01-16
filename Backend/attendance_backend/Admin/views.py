@@ -33,6 +33,8 @@ def is_rate_limited(ip, org_id):
     return False
 
 # Admin Auth Views
+
+
 @csrf_exempt
 def admin_login(request):
     if request.method != "POST":
@@ -94,6 +96,7 @@ def admin_login(request):
     })
 
 # Organization Views
+
 
 @admin_required
 @require_http_methods(["GET"])
@@ -278,6 +281,7 @@ def branch_detail_view(request, branch_id):
 
 # Teacher Views
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["GET", "POST"])
@@ -338,6 +342,7 @@ def teachers_view(request):
 
     return JsonResponse({"success": True, "id": teacher.id}, status=201)
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["GET", "PUT", "DELETE"])
@@ -372,9 +377,12 @@ def teacher_detail_view(request, teacher_id):
 
         teacher.name = body.get("name", teacher.name)
         teacher.subjects = body.get("subjects", teacher.subjects)
-        teacher.can_teach_classes = body.get("can_teach_classes", teacher.can_teach_classes)
-        teacher.reliability_score = body.get("reliability_score", teacher.reliability_score)
-        teacher.workload_score = body.get("workload_score", teacher.workload_score)
+        teacher.can_teach_classes = body.get(
+            "can_teach_classes", teacher.can_teach_classes)
+        teacher.reliability_score = body.get(
+            "reliability_score", teacher.reliability_score)
+        teacher.workload_score = body.get(
+            "workload_score", teacher.workload_score)
 
         teacher.save()
         return JsonResponse({"success": True})
@@ -382,6 +390,7 @@ def teacher_detail_view(request, teacher_id):
     # ================= DELETE =================
     teacher.delete()
     return JsonResponse({"success": True})
+
 
 @csrf_exempt
 @admin_required
@@ -460,6 +469,9 @@ def admin_upload_teacher_image(request, teacher_id):
             "teacher"
         )
 
+        # ---------- SAVE DATABASE ----------
+        rust_backend.save_database(str(settings.FACE_DATABASE_PATH))
+
         FaceImage.objects.create(
             person_type="teacher",
             person_id=teacher.employee_id,
@@ -487,6 +499,7 @@ def admin_upload_teacher_image(request, teacher_id):
             status=500
         )
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["DELETE"])
@@ -509,6 +522,7 @@ def admin_delete_teacher_image(request, teacher_id):
     return JsonResponse({"success": True})
 
 # Students Views
+
 
 @csrf_exempt
 @admin_required
@@ -569,6 +583,7 @@ def students_view(request):
         status=201
     )
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["GET", "PUT", "DELETE"])
@@ -616,6 +631,7 @@ def student_detail_view(request, student_id):
 
     student.delete()
     return JsonResponse({"success": True})
+
 
 @csrf_exempt
 @admin_required
@@ -694,6 +710,9 @@ def admin_upload_student_image(request, student_id):
             "student"
         )
 
+        # ---------- SAVE DATABASE ----------
+        rust_backend.save_database(str(settings.FACE_DATABASE_PATH))
+
         FaceImage.objects.create(
             person_type="student",
             person_id=student.roll_no,
@@ -720,6 +739,7 @@ def admin_upload_student_image(request, student_id):
             {"error": "Face processing failed"},
             status=500
         )
+
 
 @csrf_exempt
 @admin_required

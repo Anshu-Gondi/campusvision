@@ -1,13 +1,22 @@
+use crate::utils::cosine_similarity;
 use anyhow::Result;
 use hnsw_rs::prelude::*;
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::time::{Duration, Instant};
 use std::path::Path;
-use std::sync::RwLock;
-use crate::utils::cosine_similarity;
+use std::sync::{RwLock, Mutex, OnceLock};
+
+/// Writer guard
+fn is_writer() -> bool {
+    std::env::var("FACE_DB_ROLE")
+        .map(|v| v == "writer")
+        .unwrap_or(false)
+}
 
 /// Metadata stored for each face
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -38,6 +47,21 @@ static METADATA: Lazy<RwLock<HashMap<usize, FaceMetadata>>> =
 static EMBEDDINGS: Lazy<RwLock<HashMap<usize, Vec<f32>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+static LAST_SAVE: OnceLock<Mutex<Instant>> = OnceLock::new();
+const SAVE_INTERVAL: Duration = Duration::from_secs(10);
+
+fn should_save() -> bool {
+    let m = LAST_SAVE.get_or_init(|| Mutex::new(Instant::now() - SAVE_INTERVAL));
+    let mut last = m.lock().unwrap();
+
+    if last.elapsed() >= SAVE_INTERVAL {
+        *last = Instant::now();
+        true
+    } else {
+        false
+    }
+}
+
 pub fn add_face_embedding(
     embedding: Vec<f32>,
     name: String,
@@ -45,6 +69,10 @@ pub fn add_face_embedding(
     roll_no: String,
     role: String,
 ) -> Result<usize> {
+    if !is_writer() {
+        anyhow::bail!("This process is not allowed to modify face database");
+    }
+
     let role = role.to_lowercase();
     let is_teacher = role == "teacher";
 
@@ -91,10 +119,7 @@ pub fn add_face_embedding(
     Ok(id)
 }
 
-fn get_embeddings_for_person(
-    person_id: u64,
-    role: &str,
-) -> Result<Vec<Vec<f32>>, String> {
+fn get_embeddings_for_person(person_id: u64, role: &str) -> Result<Vec<Vec<f32>>, String> {
     let meta = METADATA.read().unwrap();
     let embs = EMBEDDINGS.read().unwrap();
 
@@ -115,11 +140,7 @@ fn get_embeddings_for_person(
     Ok(result)
 }
 
-pub fn can_reenroll(
-    embedding: &Vec<f32>,
-    person_id: u64,
-    role: &str,
-) -> Result<bool, String> {
+pub fn can_reenroll(embedding: &Vec<f32>, person_id: u64, role: &str) -> Result<bool, String> {
     let embeddings = get_embeddings_for_person(person_id, role)?;
 
     let max_sim = embeddings
@@ -170,11 +191,7 @@ pub fn count_by_role(role: &str) -> usize {
 }
 
 /// batch search embeddings by role
-pub fn batch_search(
-    embeddings: &[Vec<f32>],
-    role: &str,
-    k: usize,
-) -> Vec<Option<(usize, f32)>> {
+pub fn batch_search(embeddings: &[Vec<f32>], role: &str, k: usize) -> Vec<Option<(usize, f32)>> {
     let ef_search = 200;
 
     let idx = if role == "teacher" {
@@ -194,7 +211,6 @@ pub fn batch_search(
         .collect()
 }
 
-
 /// Save embeddings + metadata (rebuild HNSW on load)
 #[derive(Serialize, Deserialize)]
 struct SerializableData {
@@ -204,6 +220,14 @@ struct SerializableData {
 }
 
 pub fn save_all(base_path: &str) -> Result<()> {
+    if !is_writer() {
+        anyhow::bail!("Only writer process can save database");
+    }
+
+    if !should_save() {
+        return Ok(()); // debounced
+    }
+
     let p = Path::new(base_path);
     fs::create_dir_all(p)?;
 
@@ -229,12 +253,52 @@ pub fn save_all(base_path: &str) -> Result<()> {
         metadata: meta.clone(),
     };
 
-    fs::write(p.join("data.bin"), bincode::serialize(&data)?)?;
+    let tmp_path = p.join("data.bin.tmp");
+    let final_path = p.join("data.bin");
+
+    let bytes = bincode::serialize(&data)?;
+
+    {
+        let file = File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+    }
+
+    // 🔒 atomic replace
+    fs::rename(tmp_path, final_path)?;
+
     Ok(())
+}
+
+/// Save embeddings + metadata immediately (no debounce)
+pub fn save_all_force(base_path: &str) -> Result<()> {
+    if !is_writer() {
+        return Ok(());
+    }
+
+    let p = Path::new(base_path);
+    fs::create_dir_all(p)?;
+
+    // Force debounce to allow save immediately
+    {
+        let mut last = LAST_SAVE
+            .get_or_init(|| Mutex::new(Instant::now()))
+            .lock()
+            .unwrap();
+
+        *last = Instant::now() - SAVE_INTERVAL;
+    }
+
+    save_all(base_path)
 }
 
 /// Load from disk & REBUILD HNSW in parallel
 pub fn load_all(base_path: &str) -> Result<()> {
+    if !is_writer() {
+        return Ok(());
+    }
+
     let p = Path::new(base_path);
     if !p.exists() {
         return Ok(());

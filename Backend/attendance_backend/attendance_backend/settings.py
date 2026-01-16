@@ -186,6 +186,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ====================== RUST FACE DATABASE ======================
 # Path where HNSW + metadata will be saved
 FACE_DATABASE_PATH = BASE_DIR / "face_database"
+FACE_DB_BACKUPS = FACE_DATABASE_PATH / "backups"
+FACE_DB_MAX_BACKUPS = 3
 FACE_DATABASE_PATH.mkdir(exist_ok=True)  # Create if not exists
 
 # =============================================================

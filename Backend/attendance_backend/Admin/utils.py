@@ -62,19 +62,18 @@ def log_face_rejection(
         message=message,
     )
 
-
 def process_face_upload(file, role, admin=None, person_id=None):
     image_bytes = file.read()
 
     # ---- Detect + Embed (Rust) ----
     try:
-        result = rust_backend.detect_and_embed(image_bytes)
+        result = rust_backend.detect_and_embed(image_bytes, settings.YUNET_MODEL_PATH,)
     except Exception as e:
         if admin:
-            log_face_rejection(
+            FaceRejectionLog.objects.create(
                 reason="rust_failure",
                 role=role,
-                admin=admin,
+                admin_id=admin.get("sub") or admin.get("admin_id"),
                 person_id=person_id,
                 message=str(e),
             )
@@ -82,10 +81,10 @@ def process_face_upload(file, role, admin=None, person_id=None):
 
     if not result.get("found"):
         if admin:
-            log_face_rejection(
+            FaceRejectionLog.objects.create(
                 reason="no_face_detected",
                 role=role,
-                admin=admin,
+                admin_id=admin.get("sub") or admin.get("admin_id"),
                 person_id=person_id,
                 message="No face detected in image",
             )
@@ -104,15 +103,15 @@ def process_face_upload(file, role, admin=None, person_id=None):
         matches = rust_backend.search_person(embedding, role, 1)
         if matches:
             _, max_sim = matches[0]
-            if max_sim < QUALITY_THRESHOLD:
+            if max_sim < 0.55:  # QUALITY_THRESHOLD
                 if admin:
-                    log_face_rejection(
+                    FaceRejectionLog.objects.create(
                         reason="low_quality",
                         role=role,
-                        admin=admin,
+                        admin_id=admin.get("sub") or admin.get("admin_id"),
                         person_id=person_id,
                         similarity=max_sim,
-                        threshold=QUALITY_THRESHOLD,
+                        threshold=0.55,
                         message="Blurred / side-face / low confidence",
                     )
                 raise ValueError("Low-quality face. Please retake image.")
