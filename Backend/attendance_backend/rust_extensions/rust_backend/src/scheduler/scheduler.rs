@@ -208,15 +208,8 @@ impl FullScheduler {
     }
 
     pub fn assign_classes(&mut self, classes: &[ClassRequest]) -> Vec<Assignment> {
-        let mut ordered = classes.to_vec();
-        ordered.sort_by_key(|c| c.start_time);
-
-        let mut current = Vec::new();
-        let mut best = Vec::new();
-        let mut best_score: f32 = -1.0;
-
-        self.search(&ordered, 0, &mut current, &mut best, &mut best_score);
-        best
+        let limits = ScheduleLimits::default();
+        self.assign_classes_limited(classes, &limits)
     }
 
     pub fn assign_classes_limited(
@@ -363,7 +356,7 @@ pub struct GraphScheduler {
 #[derive(Clone)]
 struct BeamState {
     pub assignments: Vec<AssignmentIdx>,
-    pub workload: HashMap<usize, u16>,
+    pub workload: HashMap<usize, usize>,
     pub timetable: HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
     pub score: f32,
 }
@@ -411,7 +404,7 @@ impl GraphScheduler {
                 );
 
                 for cand in candidates {
-                    if time_conflict(&state.timetable, cand.id, class) {
+                    if Self::time_conflict(&state.timetable, cand.id, class) {
                         continue;
                     }
 
@@ -482,6 +475,21 @@ impl GraphScheduler {
                 })
             })
             .collect()
+    }
+
+    fn time_conflict(
+        timetable: &HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
+        teacher_id: usize,
+        class: &ClassRequest,
+    ) -> bool {
+        if let Some(slots) = timetable.get(&teacher_id) {
+            for &(s, e) in slots {
+                if class.start_time < e && class.end_time > s {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
