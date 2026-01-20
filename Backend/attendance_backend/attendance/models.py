@@ -301,6 +301,7 @@ class FaceImage(models.Model):
     def __str__(self):
         return f"{self.person_type}:{self.person_id} | emb={self.embedding_id}"
 
+
 class FaceRejectionLog(models.Model):
     ROLE_CHOICES = [
         ("student", "Student"),
@@ -311,7 +312,11 @@ class FaceRejectionLog(models.Model):
     role = models.CharField(max_length=10, choices=ROLE_CHOICES)
 
     person_id = models.CharField(max_length=50, null=True, blank=True)
-    admin_id = models.CharField(max_length=50)
+    admin_id = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True
+    )
 
     similarity = models.FloatField(null=True, blank=True)
     threshold = models.FloatField(null=True, blank=True)

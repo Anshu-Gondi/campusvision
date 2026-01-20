@@ -418,6 +418,12 @@ def admin_upload_teacher_image(request, teacher_id):
             person_id=teacher.employee_id,
         )
 
+        if embedding is None:
+            return JsonResponse(
+                {"error": "Face not detected clearly. Please upload a clear front-face image."},
+                status=400,
+            )
+
         # ---------- SEARCH ----------
         match = rust_backend.search_person(embedding, "teacher", 1)
 
@@ -658,6 +664,13 @@ def admin_upload_student_image(request, student_id):
             admin=request.admin,
             person_id=student.roll_no,
         )
+
+
+        if embedding is None:
+            return JsonResponse(
+                {"error": "Face not detected clearly. Please upload a clear front-face image."},
+                status=400,
+            )
 
         # ---------- SEARCH ----------
         match = rust_backend.search_person(embedding, "student", 1)
