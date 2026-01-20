@@ -45,6 +45,11 @@ pub fn preprocess_from_mat_and_landmarks(
     mut face_rect: Rect,
     landmarks: &[Point2f],
 ) -> Result<Tensor> {
+    // --- ROOT CAUSE #1 FIX: Ensure at least 2 landmarks for eyes ---
+    if landmarks.len() < 2 {
+        return Err(anyhow!("Insufficient landmarks for alignment"));
+    }
+
     // 1. Clamp bounding box to image bounds
     let img_w = mat.cols();
     let img_h = mat.rows();
@@ -58,7 +63,8 @@ pub fn preprocess_from_mat_and_landmarks(
     }
 
     // 2. Extract face ROI
-    let face_roi = Mat::roi(mat, face_rect).map_err(|_| anyhow!("Failed to extract face ROI"))?;
+    let face_roi = Mat::roi(mat, face_rect)
+        .map_err(|_| anyhow!("Failed to extract face ROI"))?;
 
     // 3. Eye positions relative to the ROI
     let eye_right = Point2f::new(
@@ -96,17 +102,15 @@ pub fn preprocess_from_mat_and_landmarks(
 
     // 7. Convert BGR → RGB
     let mut rgb = Mat::default();
-    imgproc::cvt_color(
-        &aligned,
-        &mut rgb,
-        imgproc::COLOR_BGR2RGB,
-        0,
-        AlgorithmHint::ALGO_HINT_DEFAULT,
-    )?;
+    imgproc::cvt_color(&aligned, &mut rgb, imgproc::COLOR_BGR2RGB, 0, AlgorithmHint::ALGO_HINT_DEFAULT)?;
+
+    // --- ROOT CAUSE #3 FIX: Ensure continuous memory before creating Tensor ---
+    if !rgb.is_continuous() {
+        return Err(anyhow!("RGB Mat is not contiguous"));
+    }
+    let data_u8 = rgb.data_bytes()?;
 
     // 8. Convert to tch::Tensor and normalize for FaceNet
-    // Ensure data exist
-    let data_u8 = rgb.data_typed::<u8>()?;
     let tensor = Tensor::from_data_size(
         data_u8,
         &[FACE_NET_SIZE as i64, FACE_NET_SIZE as i64, 3],
@@ -114,7 +118,7 @@ pub fn preprocess_from_mat_and_landmarks(
     );
 
     let tensor_f32 = tensor.to_kind(tch::Kind::Float) / 255.0;
-    let normalized = (tensor_f32 - 0.5) / 0.5; // (x - 0.5)/0.5 == (x*2 -1)
+    let normalized = (tensor_f32 - 0.5) / 0.5;
 
     // Final shape: [1, 3, 160, 160]
     Ok(normalized.unsqueeze(0).permute(&[0, 3, 1, 2]))
@@ -130,64 +134,39 @@ pub fn detect_faces(
     input_size: Size,
     score_threshold: f32,
 ) -> Result<Mat> {
-    let model_path = model_path.unwrap_or(DEFAULT_YUNET_MODEL_PATH);
+    // --- ROOT CAUSE #2 FIX: Validate model path ---
+    let model_path = match model_path {
+        Some(p) if !p.is_empty() => p,
+        _ => DEFAULT_YUNET_MODEL_PATH,
+    };
+    if !std::path::Path::new(model_path).exists() {
+        return Err(anyhow!("YuNet model not found at {}", model_path));
+    }
 
-    // Resize input for YuNet
     let mut resized = Mat::default();
-    imgproc::resize(
-        mat,
-        &mut resized,
-        input_size,
-        0.0,
-        0.0,
-        imgproc::INTER_LINEAR,
-    )?;
+    imgproc::resize(mat, &mut resized, input_size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
 
     YUNET_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
-
-        // Create ONCE per thread
         if cache.is_none() {
             let detector = FaceDetectorYN::create(
-                model_path,
-                "",
-                input_size,
-                score_threshold,
-                0.3,
-                5000,
-                0,
-                0,
-            )
-            .map_err(|e| anyhow!("Failed to create YuNet detector: {}", e))?;
-
+                model_path, "", input_size, score_threshold, 0.3, 5000, 0, 0,
+            ).map_err(|e| anyhow!("Failed to create YuNet detector: {}", e))?;
             *cache = Some(detector);
         }
-
         let detector = cache.as_mut().unwrap();
-
-        // Update input size dynamically
-        detector
-            .set_input_size(input_size)
-            .map_err(|e| anyhow!("Failed to set YuNet input size: {}", e))?;
-
+        detector.set_input_size(input_size)?;
         let mut faces = Mat::default();
-        detector
-            .detect(&resized, &mut faces)
-            .map_err(|e| anyhow!("YuNet detection failed: {}", e))?;
-
-        // Scale boxes back to original image
+        detector.detect(&resized, &mut faces)?;
+        
+        // Scale back to original image
         let scale_x = mat.cols() as f32 / input_size.width as f32;
         let scale_y = mat.rows() as f32 / input_size.height as f32;
-
         for row in 0..faces.rows() {
-            *faces.at_2d_mut::<f32>(row, 0)? *= scale_x;
-            *faces.at_2d_mut::<f32>(row, 1)? *= scale_y;
-            *faces.at_2d_mut::<f32>(row, 2)? *= scale_x;
-            *faces.at_2d_mut::<f32>(row, 3)? *= scale_y;
-
-            for &col in &[4, 6, 8, 10, 12] {
-                *faces.at_2d_mut::<f32>(row, col)? *= scale_x;
-                *faces.at_2d_mut::<f32>(row, col + 1)? *= scale_y;
+            for &col in &[0,1,2,3] { *faces.at_2d_mut::<f32>(row,col)? *= if col%2==0 { scale_x } else { scale_y }; }
+            for &col in &[4,6,8,10,12] {
+                *faces.at_2d_mut::<f32>(row,col)? *= scale_x;
+                *faces.at_2d_mut::<f32>(row,col+1)? *= scale_y;
             }
         }
 

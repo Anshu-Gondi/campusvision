@@ -21,15 +21,28 @@ pub fn detect_and_embed_rust(
         imgcodecs::IMREAD_COLOR,
     )?;
 
+    let model_path = match model_path {
+        Some(p) if !p.is_empty() => Some(p),
+        _ => None,
+    };
+
     let faces = preprocess::detect_faces(&mat, model_path, Size::new(320, 320), 0.6)?;
     let best = preprocess::pick_best_face(&faces)?;
 
     if let Some((rect, landmarks)) = best {
+        if landmarks.len() < 2 {
+            return Ok(DetectionResult {
+                found: false,
+                bbox: None,
+                embedding: None,
+            });
+        }
+
         let tensor = preprocess::preprocess_from_mat_and_landmarks(&mat, rect, &landmarks)?;
-        let embedding = match tch_model::run_face_model(&tensor) {
-            Ok(v) => v,
-            Err(_) => ort_model::run_face_model_onnx(&tensor)?,
-        };
+        let embedding = tch_model::run_face_model(&tensor).or_else(|e1| {
+            ort_model::run_face_model_onnx(&tensor)
+                .map_err(|e2| anyhow::anyhow!("TorchScript error: {}; ONNX error: {}", e1, e2))
+        })?;
 
         Ok(DetectionResult {
             found: true,
