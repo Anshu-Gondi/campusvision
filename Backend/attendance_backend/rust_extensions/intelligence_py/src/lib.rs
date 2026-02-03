@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use pyo3::prelude::*;
+use crate::scheduler::python::scheduler::register;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod scheduler;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[pymodule]
+fn intelligence_py(_py: Python, m: &PyModule) -> PyResult<()> {
+    register(m)?;
+    Ok(())
 }
