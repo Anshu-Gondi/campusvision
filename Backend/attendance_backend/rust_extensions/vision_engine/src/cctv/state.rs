@@ -1,5 +1,3 @@
-// src/cctv/state.rs
-
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -36,16 +34,17 @@ pub fn clear_daily_records() {
     }
 }
 
-/// Marks a TrackedFace if it has a confirmed role/person_id
+/// Marks a TrackedFace ONLY if identity is stable and confident
 /// Returns true if marking happened (newly marked)
-pub fn mark_tracked_face(face: &super::tracker::TrackedFace, role: &str) -> bool {
+pub fn mark_tracked_face(
+    face: &super::tracker::TrackedFace,
+    role: &str,
+) -> bool {
+    const MIN_CONFIDENCE: f32 = 0.85;
+
     if let Some(id) = face.person_id {
-        if !face.id_locked {
-            // Only mark if ID is not locked yet (optional safety)
+        if face.id_locked && face.confidence >= MIN_CONFIDENCE {
             return mark_person_today(role, id);
-        } else {
-            // Already locked → assume already marked
-            return false;
         }
     }
     false

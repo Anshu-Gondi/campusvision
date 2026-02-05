@@ -1,5 +1,3 @@
-// src/cctv/tracker.rs
-
 use intelligence_core::embeddings::batch_search;
 use crate::models::onnx_models::{
     run_emotion_model_onnx as ort_emotion,
@@ -11,12 +9,15 @@ use opencv::core::{ Point2f, Rect };
 use opencv::prelude::*;
 use std::collections::HashMap;
 use std::time::Instant;
-use ndarray::{ Array4, ArrayBase, Dim, OwnedRepr };
+use ndarray::Array4;
+
+const EMBED_EVERY_N_FRAMES: u32 = 5;
+const EMOTION_EVERY_N_FRAMES: u32 = 10;
 
 #[derive(Clone)]
 pub struct TrackedFace {
     pub track_id: usize,
-    pub person_id: Option<usize>, // None = unknown, Some = identified
+    pub person_id: Option<usize>,
     pub embedding: Vec<f32>,
     pub emotion: Option<i64>,
     pub bbox: Rect,
@@ -24,57 +25,55 @@ pub struct TrackedFace {
     pub hits: u32,
     pub age: u32,
     pub last_seen: Instant,
-    pub confidence: f32, // 0.0 → 1.0
-    pub id_locked: bool, // once true, ID never changes
+    pub confidence: f32,
+    pub id_locked: bool,
+
+    // NEW
+    pub last_embedding_update: u32,
 }
 
 pub struct FaceTracker {
     pub tracks: HashMap<usize, TrackedFace>,
     pub next_id: usize,
-    pub max_age: u32, // frames before removal
+    pub max_age: u32,
 }
 
-/// Convert OpenCV Mat to Array4<f32> (batch=1, channels=3, H, W)
 fn mat_to_array4(mat: &Mat) -> anyhow::Result<Array4<f32>> {
     if mat.channels() != 3 {
-        anyhow::bail!("Expected 3-channel BGR image, got {}", mat.channels());
+        anyhow::bail!("Expected 3-channel BGR image");
     }
 
     let rows = mat.rows() as usize;
     let cols = mat.cols() as usize;
-
     let mut array = Array4::<f32>::zeros((1, 3, rows, cols));
-
     let data = mat.data_bytes()?;
 
     for y in 0..rows {
         for x in 0..cols {
-            let idx = (y * cols + x) * 3;
-            array[[0, 0, y, x]] = data[idx + 2] as f32 / 255.0; // R
-            array[[0, 1, y, x]] = data[idx + 1] as f32 / 255.0; // G
-            array[[0, 2, y, x]] = data[idx + 0] as f32 / 255.0; // B
+            let i = (y * cols + x) * 3;
+            array[[0, 0, y, x]] = (data[i + 2] as f32) / 255.0;
+            array[[0, 1, y, x]] = (data[i + 1] as f32) / 255.0;
+            array[[0, 2, y, x]] = (data[i + 0] as f32) / 255.0;
         }
     }
 
     Ok(array)
 }
 
-/// Generate face embedding from Mat
 #[inline]
-fn run_face_embedding(mat: &opencv::prelude::Mat) -> Vec<f32> {
-    match mat_to_array4(mat) {
-        Ok(array) => ort_face(&array).unwrap_or_default(),
-        Err(_) => vec![],
-    }
+fn run_face_embedding(mat: &Mat) -> Vec<f32> {
+    mat_to_array4(mat)
+        .ok()
+        .and_then(|a| ort_face(&a).ok())
+        .unwrap_or_default()
 }
 
-/// Run emotion model from Mat
 #[inline]
-fn run_emotion(mat: &opencv::prelude::Mat) -> i64 {
-    match mat_to_array4(mat) {
-        Ok(array) => ort_emotion(&array).unwrap_or(-1),
-        Err(_) => -1,
-    }
+fn run_emotion(mat: &Mat) -> i64 {
+    mat_to_array4(mat)
+        .ok()
+        .and_then(|a| ort_emotion(&a).ok())
+        .unwrap_or(-1)
 }
 
 impl FaceTracker {
@@ -86,81 +85,87 @@ impl FaceTracker {
         }
     }
 
-    /// Main update loop: accepts raw image bytes (BGR) per frame
     pub fn update_from_bytes(&mut self, frames: Vec<&[u8]>) -> Vec<TrackedFace> {
         let now = Instant::now();
-        let mut detections: Vec<(Rect, Vec<Point2f>, opencv::prelude::Mat)> = Vec::new();
 
-        // Step 0: preprocess each frame → Mat + bbox + landmarks
-        for frame_bytes in frames {
-            if let Ok((mat, bbox, landmarks)) = preprocess_image(frame_bytes) {
+        // Step 0: detection
+        let mut detections: Vec<(Rect, Vec<Point2f>, Mat)> = Vec::new();
+        for bytes in frames {
+            if let Ok((mat, bbox, landmarks)) = preprocess_image(bytes) {
                 detections.push((bbox, landmarks, mat));
             }
         }
 
-        // Step 1: Embedding + emotion extraction
-        let embeddings_emotions: Vec<(Vec<f32>, i64, Rect, Vec<Point2f>)> = detections
-            .iter()
-            .map(|(_, _, mat)| {
-                let emb = run_face_embedding(mat);
-                let emo = run_emotion(mat);
-                (emb, emo, detections[0].0, detections[0].1.clone()) // FIXME: use correct bbox/landmarks
-            })
-            .collect();
-
-        let mut matched = vec![false; embeddings_emotions.len()];
         let mut active: Vec<TrackedFace> = self.tracks.values().cloned().collect();
+        let mut matched = vec![false; detections.len()];
 
-        // Step 1.5: Batch HNSW search (using intelligence_core)
-        let all_embeddings: Vec<Vec<f32>> = embeddings_emotions
-            .iter()
-            .map(|(emb, _, _, _)| emb.clone())
-            .collect();
-        let student_hits = batch_search(&all_embeddings, "student", 5);
-        let teacher_hits = batch_search(&all_embeddings, "teacher", 3);
-
-        // Step 2: Match existing tracks (same as before)
+        // Step 1: match existing tracks
         for track in active.iter_mut() {
             let mut best_idx = None;
-            let mut best_score = 0.3f32;
+            let mut best_score = 0.35;
 
-            for (i, (emb, _, _, _)) in embeddings_emotions.iter().enumerate() {
+            for (i, (_, _, mat)) in detections.iter().enumerate() {
                 if matched[i] {
                     continue;
                 }
 
-                let sim = cosine_similarity(&track.embedding, emb);
+                let should_embed = track.hits < 3 || track.hits % EMBED_EVERY_N_FRAMES == 0;
+
+                let emb = if should_embed {
+                    run_face_embedding(mat)
+                } else {
+                    track.embedding.clone()
+                };
+
+                let sim = cosine_similarity(&track.embedding, &emb);
                 if sim > best_score {
                     best_score = sim;
-                    best_idx = Some(i);
+                    best_idx = Some((i, emb, should_embed));
                 }
             }
 
-            if let Some(i) = best_idx {
-                let (emb, emo, bbox, landmarks) = &embeddings_emotions[i];
+            if let Some((i, emb, emb_updated)) = best_idx {
+                let (bbox, landmarks, mat) = &detections[i];
                 track.bbox = *bbox;
                 track.landmarks = landmarks.clone();
-                track.embedding = emb.clone();
-                track.emotion = Some(*emo);
                 track.hits += 1;
                 track.age = 0;
                 track.last_seen = now;
                 matched[i] = true;
 
-                // HNSW + confidence logic (same as before)
-                if !track.id_locked && track.hits >= 3 {
-                    let s = student_hits[i];
-                    let t = teacher_hits[i];
-                    if let Some((id, sim)) = s.or(t) {
-                        if sim >= 0.75 {
-                            track.person_id = Some(id);
-                            track.confidence = sim;
+                if emb_updated {
+                    track.embedding = emb;
+                    track.last_embedding_update = track.hits;
+                }
+
+                let run_emo = !track.id_locked && track.hits % EMOTION_EVERY_N_FRAMES == 0;
+                if run_emo {
+                    track.emotion = Some(run_emotion(mat));
+                }
+
+                if !track.id_locked && emb_updated && track.hits >= 3 {
+                    let student_hits = batch_search(&[track.embedding.clone()], "student", 1);
+                    let teacher_hits = batch_search(&[track.embedding.clone()], "teacher", 1);
+
+                    let best_hit = match (student_hits.get(0), teacher_hits.get(0)) {
+                        (Some(Some(s)), Some(Some(t))) => {
+                            if s.1 >= t.1 { Some(s) } else { Some(t) }
+                        }
+                        (Some(Some(s)), _) => Some(s),
+                        (_, Some(Some(t))) => Some(t),
+                        _ => None,
+                    };
+
+                    if let Some((id, sim)) = best_hit {
+                        if *sim >= 0.75 {
+                            track.person_id = Some(*id);
+                            track.confidence = *sim;
                         }
                     }
                 }
 
                 if track.person_id.is_some() {
-                    track.confidence = (track.confidence + 0.1).min(1.0);
+                    track.confidence = (track.confidence + 0.08).min(1.0);
                     if track.confidence >= 0.85 && track.hits >= 5 {
                         track.id_locked = true;
                     }
@@ -171,16 +176,15 @@ impl FaceTracker {
             }
         }
 
-        // Step 3: Add new tracks from unmatched
-        for (i, (emb, emo, bbox, landmarks)) in embeddings_emotions.into_iter().enumerate() {
+        // Step 2: add new tracks
+        for (i, (bbox, landmarks, mat)) in detections.into_iter().enumerate() {
             if !matched[i] {
-                let s = student_hits[i];
-                let t = teacher_hits[i];
-                let person_id = s.or(t).map(|(id, _)| id);
+                let emb = run_face_embedding(&mat);
+                let emo = run_emotion(&mat);
 
                 active.push(TrackedFace {
                     track_id: self.next_id,
-                    person_id,
+                    person_id: None,
                     embedding: emb,
                     emotion: Some(emo),
                     bbox,
@@ -188,25 +192,21 @@ impl FaceTracker {
                     hits: 1,
                     age: 0,
                     last_seen: now,
-                    confidence: if person_id.is_some() {
-                        0.6
-                    } else {
-                        0.0
-                    },
+                    confidence: 0.0,
                     id_locked: false,
+                    last_embedding_update: 1,
                 });
                 self.next_id += 1;
             }
         }
 
-        // Step 4: Remove old tracks
+        // Step 3: cleanup
         active.retain(|t| t.age <= self.max_age);
-
-        // Step 5: Update internal map
         self.tracks = active
             .iter()
             .map(|t| (t.track_id, t.clone()))
             .collect();
+
         active
     }
 }

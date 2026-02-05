@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize};
 
 use crate::cctv::api::{
     process_frame_rust,

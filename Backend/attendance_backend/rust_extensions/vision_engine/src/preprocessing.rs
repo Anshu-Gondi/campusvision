@@ -1,3 +1,5 @@
+// src/preprocessing.rs
+
 use anyhow::{ anyhow, Result };
 use opencv::{
     core::{ self, Mat, Point2f, Rect, Scalar, Size, Vector, AlgorithmHint, Ptr },
@@ -96,63 +98,6 @@ pub fn align_face(mat: &Mat, mut face_rect: Rect, landmarks: &[Point2f]) -> Resu
         0,
         AlgorithmHint::ALGO_HINT_DEFAULT
     )?;
-
-    Ok(rgb)
-}
-
-/// Preprocess a detected face into an aligned Mat (no tch)
-pub fn preprocess_from_mat_and_landmarks(
-    mat: &Mat,
-    mut face_rect: Rect,
-    landmarks: &[Point2f],
-) -> Result<Mat> {
-    if landmarks.len() < 2 {
-        return Err(anyhow!("Insufficient landmarks for alignment"));
-    }
-
-    // Clamp bounding box to image size
-    let img_w = mat.cols();
-    let img_h = mat.rows();
-    face_rect.x = face_rect.x.max(0);
-    face_rect.y = face_rect.y.max(0);
-    face_rect.width = (face_rect.x + face_rect.width).min(img_w) - face_rect.x;
-    face_rect.height = (face_rect.y + face_rect.height).min(img_h) - face_rect.y;
-    if face_rect.width <= 0 || face_rect.height <= 0 {
-        return Err(anyhow!("Invalid face bounding box after clamping"));
-    }
-
-    let face_roi = Mat::roi(mat, face_rect)
-        .map_err(|_| anyhow!("Failed to extract face ROI"))?;
-
-    // Eye positions relative to ROI
-    let eye_right = Point2f::new(landmarks[0].x - face_rect.x as f32,
-                                 landmarks[0].y - face_rect.y as f32);
-    let eye_left = Point2f::new(landmarks[1].x - face_rect.x as f32,
-                                landmarks[1].y - face_rect.y as f32);
-    let desired_right_eye = Point2f::new(48.0, 48.0);
-    let desired_left_eye = Point2f::new(112.0, 48.0);
-
-    // Compute affine transform to align eyes
-    let warp_mat = imgproc::get_affine_transform(
-        &Vector::from_slice(&[eye_right, eye_left]),
-        &Vector::from_slice(&[desired_right_eye, desired_left_eye]),
-    )?;
-
-    // Warp affine to standard size
-    let mut aligned = Mat::default();
-    imgproc::warp_affine(
-        &face_roi,
-        &mut aligned,
-        &warp_mat,
-        Size::new(FACE_NET_SIZE, FACE_NET_SIZE),
-        imgproc::INTER_LINEAR,
-        core::BORDER_CONSTANT,
-        Scalar::all(0.0),
-    )?;
-
-    // Convert BGR → RGB
-    let mut rgb = Mat::default();
-    imgproc::cvt_color(&aligned, &mut rgb, imgproc::COLOR_BGR2RGB, 0, AlgorithmHint::ALGO_HINT_DEFAULT)?;
 
     Ok(rgb)
 }

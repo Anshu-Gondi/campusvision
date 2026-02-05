@@ -1,14 +1,8 @@
-// src/cctv/api.rs
-
-// src/cctv/api.rs
-
 use crate::cctv::state::*;
-use crate::cctv::tracker::{FaceTracker, TrackedFace}; // <- import the trait for update
-use crate::preprocessing;
-use intelligence_core::embeddings::{batch_search, get_metadata};
-use opencv::core::{Size, Vector};
+use crate::cctv::tracker::FaceTracker;
+use opencv::core::Vector;
 use opencv::imgcodecs;
-use opencv::prelude::MatTraitConst;
+use opencv::prelude::*;
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,57 +29,64 @@ pub struct CctvResult {
 }
 
 pub fn process_frame_rust(
-    frame_bytes: &[u8],               // ← raw BGR bytes from client/camera
+    frame_bytes: &[u8],
     role: &str,
     camera_id: &str,
     min_confidence: f32,
     min_track_hits: u32,
-    model_path: Option<&str>,
+    _model_path: Option<&str>,
 ) -> anyhow::Result<Vec<CctvResult>> {
     if !["student", "teacher"].contains(&role) {
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
-    // Decode raw bytes → Mat (one frame for simplicity; extend for multi-frame later)
-    let mat = imgcodecs::imdecode(&Vector::from_slice(frame_bytes), imgcodecs::IMREAD_COLOR)?;
+    // Decode once (sanity check only)
+    let mat = imgcodecs::imdecode(
+        &Vector::from_slice(frame_bytes),
+        imgcodecs::IMREAD_COLOR,
+    )?;
     if mat.empty() {
         return Ok(Vec::new());
     }
 
-    // Pass SINGLE raw frame as Vec<&[u8]>
     let raw_frames = vec![frame_bytes];
 
     let tracks = TRACKERS.with(|map| {
         let mut map = map.borrow_mut();
         let key = (role.to_string(), camera_id.to_string());
         let tracker = map.entry(key).or_insert_with(|| FaceTracker::new(30));
-
-        // FIXED: Pass raw bytes, NOT detections
         tracker.update_from_bytes(raw_frames)
     });
 
-    // Convert tracks to your CctvResult format (your existing logic)
     let mut results = Vec::with_capacity(tracks.len());
 
     for track in tracks {
-        let mut result = CctvResult {
+        let mut mark_now = None;
+
+        // 🔒 STRICT attendance rule (delegated to state.rs)
+        if track.hits >= min_track_hits && track.confidence >= min_confidence {
+            let marked = mark_tracked_face(&track, role);
+            mark_now = Some(marked);
+        }
+
+        results.push(CctvResult {
             track_id: track.track_id as i32,
-            bbox: (track.bbox.x, track.bbox.y, track.bbox.width, track.bbox.height),
+            bbox: (
+                track.bbox.x,
+                track.bbox.y,
+                track.bbox.width,
+                track.bbox.height,
+            ),
             hits: track.hits,
             age: track.age,
             person_id: track.person_id.map(|id| id as u64),
-            name: None,
-            roll_no: None,
+            name: None,     // resolve later via metadata service
+            roll_no: None,  // same
             role: Some(role.to_string()),
             identified: track.person_id.is_some(),
             confidence: track.confidence as f64,
-            mark_now: None,
-        };
-
-        // Batch identification logic (your existing code)
-        // ... paste your candidate_embeddings / batch_results / metadata lookup here ...
-
-        results.push(result);
+            mark_now,
+        });
     }
 
     Ok(results)
@@ -101,7 +102,12 @@ pub fn get_tracked_faces_rust(role: &str, camera_id: &str) -> Vec<CctvResult> {
                     .values()
                     .map(|t| CctvResult {
                         track_id: t.track_id as i32,
-                        bbox: (t.bbox.x, t.bbox.y, t.bbox.width, t.bbox.height),
+                        bbox: (
+                            t.bbox.x,
+                            t.bbox.y,
+                            t.bbox.width,
+                            t.bbox.height,
+                        ),
                         hits: t.hits,
                         age: t.age,
                         person_id: t.person_id.map(|id| id as u64),

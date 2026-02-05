@@ -31,6 +31,10 @@ intelligence_core = { path = "../intelligence_core" }
 
 # ndarray
 ndarray = "0.15"
+redis = { version = "1.0.3", features = ["tokio-rustls-comp"] }
+ureq = { version = "2.1", features = ["json"] }
+
+dotenvy = "0.15"
 
 [profile.release]
 lto = "thin"
