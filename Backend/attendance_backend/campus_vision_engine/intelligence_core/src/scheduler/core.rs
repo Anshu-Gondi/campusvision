@@ -1,4 +1,4 @@
-use intelligence_core::embeddings::{get_metadata, search_in_role};
+use crate::embeddings::{get_metadata, search_in_role};
 use chrono::NaiveTime;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;

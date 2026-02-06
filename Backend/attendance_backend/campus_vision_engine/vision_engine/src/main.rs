@@ -14,10 +14,12 @@ mod app;
 mod service;
 mod storage;
 mod face_db;
+mod scheduler;
 
 use crate::cctv::routes::*;
 use crate::app::AppState;
 use crate::vision::routes::*;
+use crate::scheduler::routes::*;
 
 // Router setup (unchanged — this part is correct)
 pub fn cctv_router() -> Router {
@@ -44,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .nest("/", cctv_router())
         .nest("/", face_routes(state.clone())) // 🔥 NEW PART
+        .nest("/", scheduler_routes(state.clone())) // 🔥 NEW PART
         .route("/health", get(|| async { "ok" }));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
