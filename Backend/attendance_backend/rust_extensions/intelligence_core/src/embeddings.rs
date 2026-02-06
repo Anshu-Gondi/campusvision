@@ -3,7 +3,6 @@ use crate::utils::cosine_similarity;
 use anyhow::Result;
 use hnsw_rs::prelude::*;
 use once_cell::sync::Lazy;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -21,6 +20,8 @@ fn is_writer() -> bool {
 
 // HNSW <'static, f32, DistCosine> - fully Send + Sync for Python FFI
 type IndexType = Hnsw<'static, f32, DistCosine>;
+
+static NEXT_ID: Lazy<Mutex<usize>> = Lazy::new(|| Mutex::new(0));
 
 static STUDENT_INDEX: Lazy<RwLock<IndexType>> = Lazy::new(|| {
     // M = 16, max_elements = 50_000, ef_construction = 100, max_nb_links = 50
@@ -74,12 +75,9 @@ pub fn add_face_embedding(
     };
 
     // Generate ID (teacher IDs are offset to avoid collision)
-    let local_id = index.get_nb_point() as usize;
-    let id = if is_teacher {
-        1_000_000 + local_id
-    } else {
-        local_id
-    };
+    let mut counter = NEXT_ID.lock().unwrap();
+    let id = *counter;
+    *counter += 1;
 
     // Insert embedding into HNSW (NO `?`, insert returns ())
     index.insert((&embedding[..], id));
@@ -116,7 +114,7 @@ fn get_embeddings_for_person(person_id: u64, role: &str) -> Result<Vec<Vec<f32>>
     let mut result = Vec::new();
 
     for (id, m) in meta.iter() {
-        if m.role == role && m.id.parse::<u64>().ok() == Some(person_id) {
+        if m.role.eq_ignore_ascii_case(role) && m.person_id == person_id {
             if let Some(e) = embs.get(id) {
                 result.push(e.clone());
             }
@@ -204,6 +202,7 @@ pub fn batch_search(embeddings: &[Vec<f32>], role: &str, k: usize) -> Vec<Option
 /// Save embeddings + metadata (rebuild HNSW on load)
 #[derive(Serialize, Deserialize)]
 struct SerializableData {
+    version: u8,
     student_embeddings: Vec<(Vec<f32>, usize)>,
     teacher_embeddings: Vec<(Vec<f32>, usize)>,
     metadata: HashMap<usize, FaceMetadata>,
@@ -238,6 +237,7 @@ pub fn save_all(base_path: &str) -> Result<()> {
     }
 
     let data = SerializableData {
+        version: 1,
         student_embeddings: student_emb,
         teacher_embeddings: teacher_emb,
         metadata: meta.clone(),
@@ -302,6 +302,12 @@ pub fn load_all(base_path: &str) -> Result<()> {
             }
 
             {
+                let meta = METADATA.read().unwrap();
+                let mut counter = NEXT_ID.lock().unwrap();
+                *counter = meta.keys().max().map(|v| v + 1).unwrap_or(0);
+            }
+
+            {
                 let mut em = EMBEDDINGS.write().unwrap();
                 em.clear();
                 for (emb, id) in data
@@ -321,11 +327,11 @@ pub fn load_all(base_path: &str) -> Result<()> {
                 *s_idx = Hnsw::new(16, 50_000, 100, 50, DistCosine);
                 *t_idx = Hnsw::new(16, 5_000, 100, 50, DistCosine);
 
-                data.student_embeddings.par_iter().for_each(|(emb, id)| {
+                data.student_embeddings.iter().for_each(|(emb, id)| {
                     s_idx.insert((&emb[..], *id));
                 });
 
-                data.teacher_embeddings.par_iter().for_each(|(emb, id)| {
+                data.teacher_embeddings.iter().for_each(|(emb, id)| {
                     t_idx.insert((&emb[..], *id));
                 });
             }

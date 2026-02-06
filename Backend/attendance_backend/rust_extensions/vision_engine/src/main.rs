@@ -4,15 +4,16 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use rustls::crypto::{CryptoProvider, aws_lc_rs};
 
 mod cctv;
 mod models;
 mod preprocessing;
 mod vision;
 mod app;
-mod security;
-mod attendance;
-mod django;
+mod service;
+mod storage;
+mod face_db;
 
 use crate::cctv::routes::*;
 use crate::app::AppState;
@@ -31,6 +32,9 @@ pub fn cctv_router() -> Router {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    CryptoProvider::install_default(aws_lc_rs::default_provider())
+        .expect("Failed to install aws-lc-rs crypto provider");
+
     tracing_subscriber::fmt::init();
 
     // ✅ Shared global state

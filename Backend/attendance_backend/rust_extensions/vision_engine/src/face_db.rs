@@ -1,4 +1,4 @@
-use crate::hnsw_helper;
+use intelligence_core::embeddings;
 
 #[derive(Debug, Clone)]
 pub struct DuplicateCheckResult {
@@ -14,11 +14,11 @@ pub fn check_duplicate_rust(
     role: &str,
     threshold: f32,
 ) -> DuplicateCheckResult {
-    let results = hnsw_helper::search_in_role(embedding, role, 1);
+    let results = embeddings::search_in_role(embedding, role, 1);
 
     if let Some((id, sim)) = results.first() {
         if *sim >= threshold {
-            if let Some(meta) = hnsw_helper::get_metadata(*id) {
+            if let Some(meta) = embeddings::get_metadata(*id) {
                 return DuplicateCheckResult {
                     duplicate: true,
                     matched_id: Some(*id),
@@ -40,29 +40,29 @@ pub fn check_duplicate_rust(
 }
 
 pub fn get_face_info_rust(id: usize) -> Option<(usize, String, String, String)> {
-    hnsw_helper::get_metadata(id).map(|meta| {
+    embeddings::get_metadata(id).map(|meta| {
         (id, meta.name.clone(), meta.roll_no.clone(), meta.role.clone())
     })
 }
 
 pub fn count_students_rust() -> usize {
-    hnsw_helper::count_by_role("student")
+    embeddings::count_by_role("student")
 }
 
 pub fn count_teachers_rust() -> usize {
-    hnsw_helper::count_by_role("teacher")
+    embeddings::count_by_role("teacher")
 }
 
 pub fn save_database_rust(path: &str) -> anyhow::Result<()> {
-    hnsw_helper::save_all(path)?;
+    embeddings::save_all(path)?;
     Ok(())
 }
 
 pub fn load_database_rust(path: &str) -> anyhow::Result<()> {
-    hnsw_helper::load_all(path)?;
+    embeddings::load_all(path)?;
     Ok(())
 }
 
 pub fn total_registered_rust() -> usize {
-    hnsw_helper::get_total_faces()
+    embeddings::get_total_faces()
 }

@@ -31,10 +31,14 @@ intelligence_core = { path = "../intelligence_core" }
 
 # ndarray
 ndarray = "0.15"
-redis = { version = "1.0.3", features = ["tokio-rustls-comp"] }
+redis = { version = "1.0.3", features = ["aio", "tokio-rustls-comp"]}
 ureq = { version = "2.1", features = ["json"] }
 
 dotenvy = "0.15"
+
+aws-sdk-s3 = "1"
+aws-config = "1"
+rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
 
 [profile.release]
 lto = "thin"

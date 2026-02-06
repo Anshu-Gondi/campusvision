@@ -1,33 +1,32 @@
-use redis::{ Client, aio::MultiplexedConnection };
-use tokio::sync::{ RwLock, Mutex };
-use std::{ collections::HashMap, sync::Arc };
+use redis::{Client, aio::MultiplexedConnection};
+use tokio::sync::{RwLock, Mutex};
+use std::{collections::HashMap, sync::Arc};
 
-use crate::security::SecurityService;
-use crate::attendance::AttendanceService;
-use crate::django::DjangoService;
+use crate::service::security::SecurityService;
+use crate::service::attendance::AttendanceService;
+use crate::service::django::DjangoService;
+use crate::storage::minio_face_db::MinioFaceDb;
 
 #[derive(Clone)]
 pub struct AppState {
-    /// Shared Redis connection (safe for concurrent handlers)
     pub redis: Arc<Mutex<MultiplexedConnection>>,
-
-    /// session_id → last embedding
     pub last_embeddings: Arc<RwLock<HashMap<String, Vec<f32>>>>,
 
     pub security: SecurityService,
     pub attendance: AttendanceService,
     pub django: DjangoService,
+
+    pub face_db_backup: MinioFaceDb,
 }
 
 impl AppState {
     pub async fn new() -> Self {
-        // Load .env file (only affects dev; safe to call always)
-        // .ok() ignores error if .env doesn't exist (e.g. in production)
+        // Load env (dev-safe)
         dotenvy::dotenv().ok();
 
-        // Redis URL: from .env or fallback (never hardcode in prod!)
+        // ── Redis ─────────────────────────────
         let redis_url = std::env::var("REDIS_URL")
-            .expect("REDIS_URL must be set in .env or environment variables");
+            .expect("REDIS_URL must be set");
 
         let client = Client::open(redis_url)
             .expect("❌ Failed to create Redis client");
@@ -37,9 +36,14 @@ impl AppState {
             .await
             .expect("❌ Failed to connect to Redis");
 
-        // Django base URL: from .env or fallback
+        // ── Django ────────────────────────────
         let django_base_url = std::env::var("DJANGO_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+
+        // ── MinIO ─────────────────────────────
+        let face_db_backup = MinioFaceDb::new()
+            .await
+            .expect("❌ Failed to initialize MinIO face DB");
 
         Self {
             redis: Arc::new(Mutex::new(redis)),
@@ -47,6 +51,7 @@ impl AppState {
             security: SecurityService::new(),
             attendance: AttendanceService::new(),
             django: DjangoService::new(django_base_url),
+            face_db_backup,
         }
     }
 }
