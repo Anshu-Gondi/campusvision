@@ -11,10 +11,10 @@ import jwt
 import json
 import hmac
 from django.core.cache import cache
-import rust_backend
+from .utils import rust_client as rust_backend
 from Admin.models import AdminAccessKey
 from attendance.models import Attendance, Branch, FaceImage, Organization, Student, Teacher
-from .utils import DUPLICATE_THRESHOLD, REENROLL_THRESHOLD, admin_required, log_face_rejection, process_face_upload
+from .face_security import DUPLICATE_THRESHOLD, REENROLL_THRESHOLD, admin_required, log_face_rejection, process_face_upload
 from attendance.utils.minio import presigned_url
 
 SECRET = settings.ADMIN_JWT_SECRET
@@ -401,7 +401,7 @@ def admin_upload_teacher_image(request, teacher_id):
     teacher = get_object_or_404(
         Teacher,
         id=teacher_id,
-        branch__organization_id=org_id
+        branch__organization_id=org_id,
     )
 
     if "image" not in request.FILES:
@@ -412,8 +412,8 @@ def admin_upload_teacher_image(request, teacher_id):
     try:
         # ---------- DETECT + EMBED ----------
         embedding, image_bytes = process_face_upload(
-            file,
-            "teacher",
+            file=file,
+            role="teacher",
             admin=request.admin,
             person_id=teacher.employee_id,
         )
@@ -425,10 +425,10 @@ def admin_upload_teacher_image(request, teacher_id):
             )
 
         # ---------- SEARCH ----------
-        match = rust_backend.search_person(embedding, "teacher", 1)
+        matches = rust_backend.search_person(embedding, "teacher", 1)
 
-        if match:
-            matched_id, sim = match[0]
+        if matches:
+            matched_id, sim = matches[0]
 
             # ❌ Duplicate teacher
             if matched_id != teacher.id and sim >= DUPLICATE_THRESHOLD:
@@ -443,7 +443,7 @@ def admin_upload_teacher_image(request, teacher_id):
                 )
                 return JsonResponse(
                     {"error": "This face already belongs to another teacher"},
-                    status=409
+                    status=409,
                 )
 
             # ❌ Re-enroll mismatch
@@ -459,39 +459,37 @@ def admin_upload_teacher_image(request, teacher_id):
                 )
                 return JsonResponse(
                     {"error": "Face does not match existing teacher identity"},
-                    status=403
+                    status=403,
                 )
 
         # ---------- SAVE IMAGE ----------
         teacher.image.save(file.name, ContentFile(image_bytes))
-        teacher.save()
+        teacher.save(update_fields=["image"])
 
         # ---------- REGISTER EMBEDDING ----------
         embedding_id = rust_backend.add_person(
-            embedding,
-            teacher.name,
-            teacher.id,                 # numeric person_id
-            teacher.employee_id,
-            "teacher"
+            embedding=embedding,
+            name=teacher.name,
+            person_id=teacher.id,          # numeric
+            roll_no=teacher.employee_id,
+            role="teacher",
         )
 
-        # ---------- SAVE DATABASE ----------
-        rust_backend.save_database(str(settings.FACE_DATABASE_PATH))
+        # ---------- SAVE DATABASE (HTTP) ----------
+        rust_backend.save_database()
 
         FaceImage.objects.create(
             person_type="teacher",
             person_id=teacher.employee_id,
             image=teacher.image,
             embedding_id=embedding_id,
-            source="enroll"
+            source="enroll",
         )
 
-        return JsonResponse({
-            "success": True,
-            "image": presigned_url(teacher.image.name)
-        })
+        return JsonResponse(
+            {"success": True, "image": presigned_url(teacher.image.name)}
+        )
 
-    # ---------- UNEXPECTED / RUST ERRORS ----------
     except Exception as e:
         log_face_rejection(
             reason="internal_error",
@@ -500,10 +498,7 @@ def admin_upload_teacher_image(request, teacher_id):
             person_id=teacher.employee_id,
             message=str(e),
         )
-        return JsonResponse(
-            {"error": "Face processing failed"},
-            status=500
-        )
+        return JsonResponse({"error": "Face processing failed"}, status=500)
 
 
 @csrf_exempt
@@ -648,7 +643,7 @@ def admin_upload_student_image(request, student_id):
     student = get_object_or_404(
         Student,
         id=student_id,
-        branch__organization_id=org_id
+        branch__organization_id=org_id,
     )
 
     if "image" not in request.FILES:
@@ -659,12 +654,11 @@ def admin_upload_student_image(request, student_id):
     try:
         # ---------- DETECT + EMBED ----------
         embedding, image_bytes = process_face_upload(
-            file,
-            "student",
+            file=file,
+            role="student",
             admin=request.admin,
             person_id=student.roll_no,
         )
-
 
         if embedding is None:
             return JsonResponse(
@@ -673,10 +667,10 @@ def admin_upload_student_image(request, student_id):
             )
 
         # ---------- SEARCH ----------
-        match = rust_backend.search_person(embedding, "student", 1)
+        matches = rust_backend.search_person(embedding, "student", 1)
 
-        if match:
-            matched_id, sim = match[0]
+        if matches:
+            matched_id, sim = matches[0]
 
             # ❌ Duplicate student
             if matched_id != student.id and sim >= DUPLICATE_THRESHOLD:
@@ -691,7 +685,7 @@ def admin_upload_student_image(request, student_id):
                 )
                 return JsonResponse(
                     {"error": "This face already belongs to another student"},
-                    status=409
+                    status=409,
                 )
 
             # ❌ Re-enroll mismatch
@@ -707,39 +701,37 @@ def admin_upload_student_image(request, student_id):
                 )
                 return JsonResponse(
                     {"error": "Face does not match existing student identity"},
-                    status=403
+                    status=403,
                 )
 
         # ---------- SAVE IMAGE ----------
         student.image.save(file.name, ContentFile(image_bytes))
-        student.save()
+        student.save(update_fields=["image"])
 
         # ---------- REGISTER EMBEDDING ----------
         embedding_id = rust_backend.add_person(
-            embedding,
-            student.name,
-            student.id,       # numeric person_id
-            student.roll_no,
-            "student"
+            embedding=embedding,
+            name=student.name,
+            person_id=student.id,     # numeric
+            roll_no=student.roll_no,
+            role="student",
         )
 
         # ---------- SAVE DATABASE ----------
-        rust_backend.save_database(str(settings.FACE_DATABASE_PATH))
+        rust_backend.save_database()
 
         FaceImage.objects.create(
             person_type="student",
             person_id=student.roll_no,
             image=student.image,
             embedding_id=embedding_id,
-            source="enroll"
+            source="enroll",
         )
 
-        return JsonResponse({
-            "success": True,
-            "image": presigned_url(student.image.name)
-        })
+        return JsonResponse(
+            {"success": True, "image": presigned_url(student.image.name)}
+        )
 
-    # ---------- UNEXPECTED / RUST ERRORS ----------
     except Exception as e:
         log_face_rejection(
             reason="internal_error",
@@ -748,10 +740,7 @@ def admin_upload_student_image(request, student_id):
             person_id=student.roll_no,
             message=str(e),
         )
-        return JsonResponse(
-            {"error": "Face processing failed"},
-            status=500
-        )
+        return JsonResponse({"error": "Face processing failed"}, status=500)
 
 
 @csrf_exempt

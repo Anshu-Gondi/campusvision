@@ -42,6 +42,12 @@ impl IntoResponse for ApiErr {
 
 // ── DTOs ────────────────────────────────────────────────────────────────
 
+#[derive(Serialize)]
+struct ApiResponse {
+    success: bool,
+    message: String,
+}
+
 #[derive(Deserialize)]
 pub struct DetectEmbedRequest {
     pub image: Vec<u8>,
@@ -333,6 +339,90 @@ pub async fn detect_emotion_handler(
     Ok(Json(DetectEmotionResponse { emotion }))
 }
 
+/// POST /face/save
+pub async fn save_face_db_handler(
+    State(state): State<Arc<AppState>>
+) -> impl IntoResponse {
+    let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
+
+    match state.face_db_backup.save(&local_dir).await {
+        Ok(_) => (StatusCode::OK, Json(ApiResponse {
+            success: true,
+            message: "Face DB saved successfully".to_string(),
+        })),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+            success: false,
+            message: format!("Failed to save DB: {}", e),
+        })),
+    }
+}
+
+/// POST /face/init
+pub async fn init_face_db_handler(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let local_dir = std::env::var("FACE_DB_PATH")
+        .unwrap_or_else(|_| "face_database".to_string());
+
+    if let Err(e) = std::fs::create_dir_all(&local_dir) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Failed to create DB dir: {e}"),
+            }),
+        );
+    }
+
+    // initialize empty in-memory DB
+    if let Err(e) = crate::face_db::init_database_rust() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Failed to init DB: {e}"),
+            }),
+        );
+    }
+
+    // persist + backup
+    if let Err(e) = state.face_db_backup.save(&local_dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("DB initialized but backup failed: {e}"),
+            }),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Face DB initialized successfully".to_string(),
+        }),
+    )
+}
+
+/// POST /face/load
+pub async fn load_face_db_handler(
+    State(state): State<Arc<AppState>>
+) -> impl IntoResponse {
+    let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
+
+    match state.face_db_backup.load(&local_dir).await {
+        Ok(_) => (StatusCode::OK, Json(ApiResponse {
+            success: true,
+            message: "Face DB loaded successfully".to_string(),
+        })),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+            success: false,
+            message: format!("Failed to load DB: {}", e),
+        })),
+    }
+}
+
 // ── Routes ──────────────────────────────────────────────────────────────
 
 pub fn face_routes(state: Arc<AppState>) -> Router {
@@ -344,5 +434,8 @@ pub fn face_routes(state: Arc<AppState>) -> Router {
         .route("/face/verify", post(verify_face_handler))
         .route("/face/emotion", post(detect_emotion_handler))
         .route("/attendance/verify", post(verify_attendance_handler))
+        .route("/face/load", post(load_face_db_handler))
+        .route("/face/save", post(save_face_db_handler))
+        .route("/face/init", post(init_face_db_handler))
         .with_state(state)
 }

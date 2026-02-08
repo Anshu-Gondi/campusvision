@@ -41,6 +41,48 @@ static EMBEDDINGS: Lazy<RwLock<HashMap<usize, Vec<f32>>>> =
 static LAST_SAVE: OnceLock<Mutex<Instant>> = OnceLock::new();
 const SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Initialize an empty in-memory face database (hard reset)
+pub fn init_empty_database() -> Result<()> {
+    if !is_writer() {
+        anyhow::bail!("Only writer process can initialize face database");
+    }
+
+    // Clear metadata
+    {
+        let mut meta = METADATA.write().unwrap();
+        meta.clear();
+    }
+
+    // Clear embeddings
+    {
+        let mut em = EMBEDDINGS.write().unwrap();
+        em.clear();
+    }
+
+    // Reset ID counter
+    {
+        let mut counter = NEXT_ID.lock().unwrap();
+        *counter = 0;
+    }
+
+    // Reset indices
+    {
+        let mut student_idx = STUDENT_INDEX.write().unwrap();
+        let mut teacher_idx = TEACHER_INDEX.write().unwrap();
+
+        *student_idx = Hnsw::new(16, 50_000, 100, 50, DistCosine);
+        *teacher_idx = Hnsw::new(16, 5_000, 100, 50, DistCosine);
+    }
+
+    // Reset save debounce timer
+    if let Some(m) = LAST_SAVE.get() {
+        let mut last = m.lock().unwrap();
+        *last = Instant::now() - SAVE_INTERVAL;
+    }
+
+    Ok(())
+}
+
 fn should_save() -> bool {
     let m = LAST_SAVE.get_or_init(|| Mutex::new(Instant::now() - SAVE_INTERVAL));
     let mut last = m.lock().unwrap();

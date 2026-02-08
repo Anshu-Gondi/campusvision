@@ -2,9 +2,11 @@ import jwt
 from django.conf import settings
 from django.http import JsonResponse
 from attendance.models import FaceRejectionLog
-import rust_backend
+from .utils import rust_client as rust_backend
 
 SECRET = settings.ADMIN_JWT_SECRET
+RUST_BASE_URL = getattr(settings, "RUST_BASE_URL", "http://127.0.0.1:3000")
+RUST_TIMEOUT = 10
 
 
 def admin_required(view_func):
@@ -74,15 +76,9 @@ def log_face_rejection(
 def process_face_upload(file, role, admin=None, person_id=None):
     image_bytes = file.read()
 
-    # ---- Detect + Embed (Rust) ----
+    # ── Detect + Embed (Rust HTTP) ─────────────────────────
     try:
-        result = rust_backend.detect_and_embed(
-            image_bytes,
-            settings.YUNET_MODEL_PATH,
-        )
-
-        if not settings.YUNET_MODEL_PATH:
-            raise RuntimeError("YuNet model path is not configured")
+        result = rust_backend.detect_and_embed(image_bytes)
 
     except Exception as e:
         log_face_rejection(
@@ -93,41 +89,3 @@ def process_face_upload(file, role, admin=None, person_id=None):
             message=str(e),
         )
         return None, None   # 🔴 HARD STOP
-
-    # ---- NO FACE FOUND ----
-    if not result or not result.get("found"):
-        log_face_rejection(
-            reason="no_face_detected",
-            role=role,
-            admin=admin,
-            person_id=person_id,
-            message="No face detected in image",
-        )
-        return None, None   # 🔴 HARD STOP
-
-    embedding = result["embedding"]
-
-    # ---- QUALITY GATE ----
-    total = (
-        rust_backend.count_students()
-        if role == "student"
-        else rust_backend.count_teachers()
-    )
-
-    if total > 0:
-        matches = rust_backend.search_person(embedding, role, 1)
-        if matches:
-            _, max_sim = matches[0]
-            if max_sim < QUALITY_THRESHOLD:
-                log_face_rejection(
-                    reason="low_quality",
-                    role=role,
-                    admin=admin,
-                    person_id=person_id,
-                    similarity=max_sim,
-                    threshold=QUALITY_THRESHOLD,
-                    message="Blurred / side-face / low confidence",
-                )
-                return None, None   # 🔴 HARD STOP
-
-    return embedding, image_bytes

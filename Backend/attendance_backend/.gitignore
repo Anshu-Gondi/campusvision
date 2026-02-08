@@ -16,6 +16,7 @@ target/
 *.lib
 *.so
 *.dylib
+*.bin
 
 # Cargo package files
 Cargo.lock

@@ -66,3 +66,8 @@ pub fn load_database_rust(path: &str) -> anyhow::Result<()> {
 pub fn total_registered_rust() -> usize {
     embeddings::get_total_faces()
 }
+
+pub fn init_database_rust() -> anyhow::Result<()> {
+    embeddings::init_empty_database()?;
+    Ok(())
+}

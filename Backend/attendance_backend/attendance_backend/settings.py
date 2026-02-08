@@ -14,7 +14,6 @@ from pathlib import Path
 import dj_database_url
 from decouple import config
 import os
-import sys
 
 IS_WINDOWS = os.name == "nt"
 IS_LINUX = os.name == "posix"
@@ -27,49 +26,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config("SECRET_KEY")
 ADMIN_JWT_SECRET = config("ADMIN_JWT_SECRET")
-
-# =================== RUST DLL PATH FIX (WINDOWS ONLY, SKIP DOCKER) ===================
-if IS_WINDOWS and not RUNNING_IN_DOCKER:
-    try:
-        # 1. Rust wheel location (where .pyd is installed)
-        VENV_SITE_PACKAGES = BASE_DIR.parent / "venv" / "lib" / "site-packages"
-        if VENV_SITE_PACKAGES.exists():
-            os.add_dll_directory(str(VENV_SITE_PACKAGES))
-
-        # 2. Libtorch CPU DLLs
-        LIBTORCH_PATH = r"C:\tools\libtorch\lib"
-        if os.path.isdir(LIBTORCH_PATH):
-            os.add_dll_directory(LIBTORCH_PATH)
-        else:
-            print("⚠️ Libtorch DLL directory not found")
-
-        # 3. OpenCV DLLs
-        OPENCV_PATH = r"C:\tools\opencv\build\x64\vc16\bin"
-        if os.path.isdir(OPENCV_PATH):
-            os.add_dll_directory(OPENCV_PATH)
-        else:
-            print("⚠️ OpenCV DLL directory not found")
-
-        # 4. ONNX Runtime DLLs (Rust target dir)
-        ORT_PATH = (
-            BASE_DIR
-            / "rust_extensions"
-            / "rust_backend"
-            / "target"
-            / "release"
-        )
-        if ORT_PATH.exists():
-            os.add_dll_directory(str(ORT_PATH))
-        else:
-            print("⚠️ ORT DLL dir not found yet (will exist after Rust build)")
-
-        print("✅ Windows DLL paths configured (not in Docker)")
-
-    except Exception as e:
-        print(f"⚠️ Windows DLL setup failed: {e}")
-else:
-    print("✅ Skipping Windows DLL setup (Linux or Docker)")
-# =====================================================================================
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", default=False, cast=bool)
@@ -153,34 +109,6 @@ AWS_DEFAULT_ACL = None
 
 MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
 
-# ====================== YUNET MODEL PATH ======================
-
-YUNET_MODEL_PATH = (
-    BASE_DIR
-    / "rust_extensions"
-    / "rust_backend"
-    / "models"
-    / "face_detection_yunet_2023mar.onnx"
-)
-
-if not YUNET_MODEL_PATH.exists():
-    if IS_WINDOWS and not RUNNING_IN_DOCKER:
-        # On Windows dev: fail fast
-        raise RuntimeError(
-            f"YuNet model not found at: {YUNET_MODEL_PATH}\n"
-            "Please ensure the ONNX file exists or build it from Rust extensions."
-        )
-    else:
-        # On Linux / Docker: warn only
-        print(f"⚠️ YuNet model path missing at startup: {YUNET_MODEL_PATH}")
-else:
-    # Path exists: convert to string for PyO3
-    YUNET_MODEL_PATH = str(YUNET_MODEL_PATH)
-
-print(f"✅ YuNet model path set: {YUNET_MODEL_PATH if YUNET_MODEL_PATH else 'MISSING'}")
-
-# ===================================================
-
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -209,11 +137,9 @@ STATIC_URL = 'static/'
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ====================== RUST FACE DATABASE ======================
-# Path where HNSW + metadata will be saved
+# ====================== FACE DATABASE (API-based) ======================
+# Path to store cached face embeddings fetched via Axum API
 FACE_DATABASE_PATH = BASE_DIR / "face_database"
 FACE_DB_BACKUPS = FACE_DATABASE_PATH / "backups"
 FACE_DB_MAX_BACKUPS = 3
-FACE_DATABASE_PATH.mkdir(exist_ok=True)  # Create if not exists
-
-# =============================================================
+FACE_DATABASE_PATH.mkdir(exist_ok=True)
