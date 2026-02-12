@@ -490,16 +490,22 @@ def admin_upload_teacher_image(request, teacher_id):
             {"success": True, "image": presigned_url(teacher.image.name)}
         )
 
+    except rust_backend.RustAPIError:
+        # Already logged in process_face_upload
+        return JsonResponse(
+            {"error": "Face rejected by face engine. Please upload a clear image."},
+            status=400,
+        )
+
     except Exception as e:
         log_face_rejection(
             reason="internal_error",
-            role="teacher",
+            role="teacher",  # or "student"
             admin=request.admin,
-            person_id=teacher.employee_id,
-            message=str(e),
+            person_id=teacher.employee_id,  # or student.roll_no
+            message=f"{type(e).__name__}: {str(e)}",
         )
         return JsonResponse({"error": "Face processing failed"}, status=500)
-
 
 @csrf_exempt
 @admin_required
@@ -732,13 +738,20 @@ def admin_upload_student_image(request, student_id):
             {"success": True, "image": presigned_url(student.image.name)}
         )
 
+    except rust_backend.RustAPIError:
+        # Already logged in process_face_upload
+        return JsonResponse(
+            {"error": "Face rejected by face engine. Please upload a clear image."},
+            status=400,
+        )
+
     except Exception as e:
         log_face_rejection(
             reason="internal_error",
-            role="student",
+            role="student",  # or "student"
             admin=request.admin,
-            person_id=student.roll_no,
-            message=str(e),
+            person_id=student.roll_no,  # or student.roll_no
+            message=f"{type(e).__name__}: {str(e)}",
         )
         return JsonResponse({"error": "Face processing failed"}, status=500)
 

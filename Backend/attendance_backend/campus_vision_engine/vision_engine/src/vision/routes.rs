@@ -9,8 +9,9 @@ use serde::{ Deserialize, Serialize };
 use std::sync::Arc;
 
 use crate::app::AppState;
+use intelligence_core::embeddings::add_face_embedding;
 
-use super::detect::{ detect_and_embed_rust, detect_and_add_person_rust };
+use super::detect::detect_and_embed_rust;
 use super::index::{ search_person_rust, can_reenroll_rust };
 use super::recognition::{ verify_face_onnx, detect_emotion_onnx };
 
@@ -52,6 +53,7 @@ struct ApiResponse {
 pub struct DetectEmbedRequest {
     pub image: Vec<u8>,
     pub model_path: Option<String>,
+    pub enrollment: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -63,7 +65,7 @@ pub struct DetectEmbedResponse {
 
 #[derive(Deserialize)]
 pub struct AddPersonRequest {
-    pub image: Vec<u8>,
+    pub embedding: Vec<f32>,
     pub name: String,
     pub person_id: u64,
     pub roll_no: String,
@@ -138,6 +140,7 @@ pub async fn detect_and_embed_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DetectEmbedRequest>
 ) -> ApiResult<DetectEmbedResponse> {
+
     let mut redis = state.redis.lock().await;
 
     if !state.security.allow_request(&mut redis, "detect_embed").await {
@@ -147,20 +150,29 @@ pub async fn detect_and_embed_handler(
         });
     }
 
-    let result = detect_and_embed_rust(&payload.image, payload.model_path.as_deref()).map_err(
-        |e| ApiErr {
-            status: StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        }
-    )?;
+    let enrollment = payload.enrollment.unwrap_or(false);
 
-    Ok(
-        Json(DetectEmbedResponse {
-            found: result.found,
-            bbox: result.bbox,
-            embedding: result.embedding,
-        })
+    // 🔒 HARD LIMIT: only ONE inference at a time
+    let _permit = state.face_infer_sem.acquire().await.unwrap();
+
+    // 🚀 JUST CALL THE ASYNC FUNCTION DIRECTLY
+    let result = detect_and_embed_rust(
+        payload.image,
+        None,          // model_input_size
+        None,          // layout
+        enrollment,
     )
+    .await
+    .map_err(|e| ApiErr {
+        status: StatusCode::BAD_REQUEST,
+        message: e.to_string(),
+    })?;
+
+    Ok(Json(DetectEmbedResponse {
+        found: result.found,
+        bbox: result.bbox,
+        embedding: result.embedding,
+    }))
 }
 
 pub async fn detect_and_add_person_handler(
@@ -176,8 +188,8 @@ pub async fn detect_and_add_person_handler(
         });
     }
 
-    let id = detect_and_add_person_rust(
-        &payload.image,
+    let id = add_face_embedding(
+        payload.embedding,
         payload.name,
         payload.person_id,
         payload.roll_no,
@@ -283,6 +295,7 @@ pub async fn verify_attendance_handler(
     )
 }
 
+// verify_face_handler
 pub async fn verify_face_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<VerifyFaceRequest>
@@ -296,22 +309,27 @@ pub async fn verify_face_handler(
         });
     }
 
-    let similarity = tokio::task
-        ::spawn_blocking(move || {
-            verify_face_onnx(payload.image, &payload.known_embedding)
-        }).await
-        .map_err(|_| ApiErr {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Inference task panicked".into(),
-        })?
-        .map_err(|e| ApiErr {
-            status: StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        })?;
+    // 🔒 HARD LIMIT: only ONE inference at a time
+    let _permit = state.face_infer_sem.acquire().await.unwrap();
+
+    let similarity = tokio::task::spawn_blocking(move || {
+        // provide default None for missing arguments
+        verify_face_onnx(payload.image, &payload.known_embedding, None, None)
+    })
+    .await
+    .map_err(|_| ApiErr {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: "Inference task panicked".into(),
+    })?
+    .map_err(|e| ApiErr {
+        status: StatusCode::BAD_REQUEST,
+        message: e.to_string(),
+    })?;
 
     Ok(Json(VerifyFaceResponse { similarity }))
 }
 
+// detect_emotion_handler
 pub async fn detect_emotion_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DetectEmotionRequest>
@@ -325,44 +343,53 @@ pub async fn detect_emotion_handler(
         });
     }
 
-    let emotion = tokio::task
-        ::spawn_blocking(move || { detect_emotion_onnx(payload.image) }).await
-        .map_err(|_| ApiErr {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Inference task panicked".into(),
-        })?
-        .map_err(|e| ApiErr {
-            status: StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        })?;
+    let _permit = state.face_infer_sem.acquire().await.unwrap();
+
+    let emotion = tokio::task::spawn_blocking(move || {
+        // provide default None for missing arguments
+        detect_emotion_onnx(payload.image, None, None)
+    })
+    .await
+    .map_err(|_| ApiErr {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: "Inference task panicked".into(),
+    })?
+    .map_err(|e| ApiErr {
+        status: StatusCode::BAD_REQUEST,
+        message: e.to_string(),
+    })?;
 
     Ok(Json(DetectEmotionResponse { emotion }))
 }
 
+
 /// POST /face/save
-pub async fn save_face_db_handler(
-    State(state): State<Arc<AppState>>
-) -> impl IntoResponse {
+pub async fn save_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
 
     match state.face_db_backup.save(&local_dir).await {
-        Ok(_) => (StatusCode::OK, Json(ApiResponse {
-            success: true,
-            message: "Face DB saved successfully".to_string(),
-        })),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-            success: false,
-            message: format!("Failed to save DB: {}", e),
-        })),
+        Ok(_) =>
+            (
+                StatusCode::OK,
+                Json(ApiResponse {
+                    success: true,
+                    message: "Face DB saved successfully".to_string(),
+                }),
+            ),
+        Err(e) =>
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    success: false,
+                    message: format!("Failed to save DB: {}", e),
+                }),
+            ),
     }
 }
 
 /// POST /face/init
-pub async fn init_face_db_handler(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    let local_dir = std::env::var("FACE_DB_PATH")
-        .unwrap_or_else(|_| "face_database".to_string());
+pub async fn init_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
 
     if let Err(e) = std::fs::create_dir_all(&local_dir) {
         return (
@@ -406,20 +433,26 @@ pub async fn init_face_db_handler(
 }
 
 /// POST /face/load
-pub async fn load_face_db_handler(
-    State(state): State<Arc<AppState>>
-) -> impl IntoResponse {
+pub async fn load_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
 
     match state.face_db_backup.load(&local_dir).await {
-        Ok(_) => (StatusCode::OK, Json(ApiResponse {
-            success: true,
-            message: "Face DB loaded successfully".to_string(),
-        })),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-            success: false,
-            message: format!("Failed to load DB: {}", e),
-        })),
+        Ok(_) =>
+            (
+                StatusCode::OK,
+                Json(ApiResponse {
+                    success: true,
+                    message: "Face DB loaded successfully".to_string(),
+                }),
+            ),
+        Err(e) =>
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    success: false,
+                    message: format!("Failed to load DB: {}", e),
+                }),
+            ),
     }
 }
 

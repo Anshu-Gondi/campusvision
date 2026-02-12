@@ -3,7 +3,7 @@ use crate::models::onnx_models::{
     run_emotion_model_onnx as ort_emotion,
     run_face_model_onnx as ort_face,
 };
-use crate::preprocessing::preprocess_image;
+use crate::preprocessing;
 use intelligence_core::utils::cosine_similarity;
 use opencv::core::{ Point2f, Rect };
 use opencv::prelude::*;
@@ -27,8 +27,6 @@ pub struct TrackedFace {
     pub last_seen: Instant,
     pub confidence: f32,
     pub id_locked: bool,
-
-    // NEW
     pub last_embedding_update: u32,
 }
 
@@ -36,24 +34,47 @@ pub struct FaceTracker {
     pub tracks: HashMap<usize, TrackedFace>,
     pub next_id: usize,
     pub max_age: u32,
+    pub face_model_path: String,
+    pub emotion_model_path: String,
+    pub model_input_size: Option<(usize, usize)>,
+    pub layout: Option<String>,
 }
 
-fn mat_to_array4(mat: &Mat) -> anyhow::Result<Array4<f32>> {
+fn mat_to_array4(mat: &Mat, layout: &str) -> anyhow::Result<Array4<f32>> {
     if mat.channels() != 3 {
         anyhow::bail!("Expected 3-channel BGR image");
     }
 
     let rows = mat.rows() as usize;
     let cols = mat.cols() as usize;
-    let mut array = Array4::<f32>::zeros((1, 3, rows, cols));
+    let mut array = match layout {
+        "NCHW" => Array4::<f32>::zeros((1, 3, rows, cols)),
+        "NHWC" => Array4::<f32>::zeros((1, rows, cols, 3)),
+        _ => anyhow::bail!("Unsupported layout: {}", layout),
+    };
+
     let data = mat.data_bytes()?;
 
     for y in 0..rows {
         for x in 0..cols {
             let i = (y * cols + x) * 3;
-            array[[0, 0, y, x]] = (data[i + 2] as f32) / 255.0;
-            array[[0, 1, y, x]] = (data[i + 1] as f32) / 255.0;
-            array[[0, 2, y, x]] = (data[i + 0] as f32) / 255.0;
+            let r = (data[i + 2] as f32) / 255.0;
+            let g = (data[i + 1] as f32) / 255.0;
+            let b = (data[i + 0] as f32) / 255.0;
+
+            match layout {
+                "NCHW" => {
+                    array[[0, 0, y, x]] = r;
+                    array[[0, 1, y, x]] = g;
+                    array[[0, 2, y, x]] = b;
+                }
+                "NHWC" => {
+                    array[[0, y, x, 0]] = r;
+                    array[[0, y, x, 1]] = g;
+                    array[[0, y, x, 2]] = b;
+                }
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -61,37 +82,52 @@ fn mat_to_array4(mat: &Mat) -> anyhow::Result<Array4<f32>> {
 }
 
 #[inline]
-fn run_face_embedding(mat: &Mat) -> Vec<f32> {
-    mat_to_array4(mat)
-        .ok()
-        .and_then(|a| ort_face(&a).ok())
-        .unwrap_or_default()
+fn run_face_embedding(mat: &Mat, model_path: &str, layout: &str) -> Vec<f32> {
+    let input = mat_to_array4(mat, layout).expect("Failed to convert Mat to Array4");
+
+    ort_face(&input, model_path).expect("Face ONNX inference failed")
 }
 
 #[inline]
-fn run_emotion(mat: &Mat) -> i64 {
-    mat_to_array4(mat)
+fn run_emotion(mat: &Mat, model_path: &str, layout: &str) -> i64 {
+    mat_to_array4(mat, layout)
         .ok()
-        .and_then(|a| ort_emotion(&a).ok())
+        .and_then(|a| ort_emotion(&a, model_path).ok())
         .unwrap_or(-1)
 }
 
 impl FaceTracker {
-    pub fn new(max_age: u32) -> Self {
+    pub fn new(
+        max_age: u32,
+        face_model_path: String,
+        emotion_model_path: String,
+        model_input_size: Option<(usize, usize)>,
+        layout: Option<String>
+    ) -> Self {
         Self {
             tracks: HashMap::new(),
             next_id: 0,
             max_age,
+            face_model_path,
+            emotion_model_path,
+            model_input_size,
+            layout,
         }
     }
 
     pub fn update_from_bytes(&mut self, frames: Vec<&[u8]>) -> Vec<TrackedFace> {
         let now = Instant::now();
+        let layout_str = self.layout.as_deref().unwrap_or("NHWC");
 
         // Step 0: detection
         let mut detections: Vec<(Rect, Vec<Point2f>, Mat)> = Vec::new();
         for bytes in frames {
-            if let Ok((mat, bbox, landmarks)) = preprocess_image(bytes) {
+            if
+                let Ok((mat, bbox, landmarks)) = preprocessing::preprocess_image_dynamic(
+                    bytes,
+                    self.model_input_size
+                )
+            {
                 detections.push((bbox, landmarks, mat));
             }
         }
@@ -109,13 +145,19 @@ impl FaceTracker {
                     continue;
                 }
 
-                let should_embed = track.hits < 3 || track.hits % EMBED_EVERY_N_FRAMES == 0;
+                let should_embed =
+                    track.embedding.is_empty() ||
+                    track.hits.saturating_sub(track.last_embedding_update) >= EMBED_EVERY_N_FRAMES;
 
                 let emb = if should_embed {
-                    run_face_embedding(mat)
+                    run_face_embedding(mat, &self.face_model_path, layout_str)
                 } else {
-                    track.embedding.clone()
+                    track.embedding.as_slice().to_vec()
                 };
+
+                if track.embedding.is_empty() || emb.is_empty() {
+                    continue;
+                }
 
                 let sim = cosine_similarity(&track.embedding, &emb);
                 if sim > best_score {
@@ -140,7 +182,7 @@ impl FaceTracker {
 
                 let run_emo = !track.id_locked && track.hits % EMOTION_EVERY_N_FRAMES == 0;
                 if run_emo {
-                    track.emotion = Some(run_emotion(mat));
+                    track.emotion = Some(run_emotion(mat, &self.emotion_model_path, layout_str));
                 }
 
                 if !track.id_locked && emb_updated && track.hits >= 3 {
@@ -179,8 +221,12 @@ impl FaceTracker {
         // Step 2: add new tracks
         for (i, (bbox, landmarks, mat)) in detections.into_iter().enumerate() {
             if !matched[i] {
-                let emb = run_face_embedding(&mat);
-                let emo = run_emotion(&mat);
+                let emb = run_face_embedding(&mat, &self.face_model_path, layout_str);
+                let emo = run_emotion(&mat, &self.emotion_model_path, layout_str);
+
+                if emb.is_empty() {
+                    continue;
+                }
 
                 active.push(TrackedFace {
                     track_id: self.next_id,

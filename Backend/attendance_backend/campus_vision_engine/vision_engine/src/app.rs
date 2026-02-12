@@ -1,5 +1,5 @@
 use redis::{Client, aio::MultiplexedConnection};
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{RwLock, Mutex, Semaphore};
 use std::{collections::HashMap, sync::Arc};
 
 use crate::service::security::SecurityService;
@@ -11,6 +11,8 @@ use crate::storage::minio_face_db::MinioFaceDb;
 pub struct AppState {
     pub redis: Arc<Mutex<MultiplexedConnection>>,
     pub last_embeddings: Arc<RwLock<HashMap<String, Vec<f32>>>>,
+    // 🔒 HARD LIMIT: 1 face inference at a time
+    pub face_infer_sem: Arc<Semaphore>,
 
     pub security: SecurityService,
     pub attendance: AttendanceService,
@@ -48,6 +50,7 @@ impl AppState {
         Self {
             redis: Arc::new(Mutex::new(redis)),
             last_embeddings: Arc::new(RwLock::new(HashMap::new())),
+            face_infer_sem: Arc::new(Semaphore::new(1)),
             security: SecurityService::new(),
             attendance: AttendanceService::new(),
             django: DjangoService::new(django_base_url),

@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Rust (DO NOT ship to Fly)
+campus_vision_engine/
+target/
+*.onnx
+*.bin
+
+# Local media
+media/
+face_database/
+
+# Git
+.git
+.gitignore
+
+# Env
+.env

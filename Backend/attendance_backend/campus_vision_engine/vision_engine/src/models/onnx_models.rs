@@ -1,18 +1,13 @@
-// src/models/onnx_models.rs
-
-use anyhow::{anyhow, Result};
+use anyhow::{ anyhow, Result };
 use once_cell::sync::OnceCell;
-use onnxruntime::{
-    environment::Environment,
-    session::Session,
-    GraphOptimizationLevel,
-};
-use ndarray::Array4;
-use std::{cell::RefCell, path::Path};
+use onnxruntime::{ environment::Environment, session::Session, GraphOptimizationLevel };
+use ndarray::{ Array4, ArrayD };
+use std::{ cell::RefCell, collections::HashMap };
 
-//==========================
-// GLOBAL ENV
-//==========================
+// ==========================
+// GLOBAL ORT ENVIRONMENT
+// ==========================
+
 static ORT_ENV: OnceCell<Environment> = OnceCell::new();
 
 fn ort_env() -> &'static Environment {
@@ -24,41 +19,86 @@ fn ort_env() -> &'static Environment {
     })
 }
 
-//==========================
-// THREAD-LOCAL SESSIONS
-//==========================
+// ==========================
+// THREAD LOCAL SESSION CACHE
+// ==========================
+
 thread_local! {
-    static FACE_SESSION: RefCell<Option<Session<'static>>> = RefCell::new(None);
-    static EMOTION_SESSION: RefCell<Option<Session<'static>>> = RefCell::new(None);
+    static SESSION_CACHE: RefCell<HashMap<String, Session<'static>>> = RefCell::new(HashMap::new());
 }
 
-//==========================
-// FACE MODEL
-//==========================
-pub fn run_face_model_onnx(input_array: &Array4<f32>) -> Result<Vec<f32>> {
-    if input_array.shape() != [1, 3, 160, 160] {
-        return Err(anyhow!("Unexpected input array shape: {:?}", input_array.shape()));
-    }
+// ==========================
+// LOAD OR GET SESSION
+// ==========================
 
-    FACE_SESSION.with(|cell| {
-        let mut slot = cell.borrow_mut();
+fn with_session<F, T>(model_path: &str, f: F) -> Result<T>
+    where F: FnOnce(&mut Session<'static>) -> Result<T>
+{
+    let key = model_path.to_string();
 
-        if slot.is_none() {
-            let model_path: &'static Path =
-                Box::leak(Box::new(Path::new("models/facenet.onnx").to_owned()));
+    SESSION_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
 
-            let session = ort_env()
-                .new_session_builder()?
-                .with_optimization_level(GraphOptimizationLevel::Basic)?
-                .with_model_from_file(model_path)?;
+        if !cache.contains_key(&key) {
+            let builder = ort_env()
+                .new_session_builder()
+                .map_err(|e| anyhow!("Failed to create session builder: {e}"))?;
 
-            *slot = Some(session);
+            let builder = builder
+                .with_number_threads(1)?
+                .with_optimization_level(GraphOptimizationLevel::Basic)?;
+
+            let static_path: &'static str = Box::leak(model_path.to_string().into_boxed_str());
+
+            let session = builder
+                .with_model_from_file(static_path)
+                .map_err(|e| anyhow!("Failed to load model {model_path}: {e}"))?;
+
+            cache.insert(key.clone(), session);
         }
 
-        let session = slot.as_mut().unwrap();
-        let outputs = session.run(vec![input_array.clone().into_dyn()])?;
+        let session = cache.get_mut(&key).ok_or_else(|| anyhow!("Session not found"))?;
 
-        let slice: &[f32] = outputs[0]
+        f(session)
+    })
+}
+
+// ==========================
+// RUN FACE MODEL
+// ==========================
+
+pub fn run_face_model_onnx(input_array: &Array4<f32>, model_path: &str) -> Result<Vec<f32>> {
+    with_session(model_path, |session| {
+        let input_info = session.inputs
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow!("Model has no inputs"))?;
+
+        let model_shape: Vec<Option<usize>> = input_info.dimensions
+            .iter()
+            .map(|d| d.map(|x| x as usize))
+            .collect();
+
+        let input_shape = input_array.shape();
+
+        let array_to_use: ArrayD<f32> = match (model_shape.as_slice(), input_shape) {
+            ([Some(_), Some(c), Some(_), Some(_)], [_, cc, _, _]) if *cc == *c => {
+                input_array.clone().into_dyn()
+            }
+            ([Some(_), Some(_), Some(_), Some(c)], [_, _, _, cc]) if *cc == *c => {
+                input_array.clone().into_dyn()
+            }
+            _ =>
+                anyhow::bail!(
+                    "Input shape/layout mismatch: model {:?}, input {:?}",
+                    model_shape,
+                    input_shape
+                ),
+        };
+
+        let outputs = session.run(vec![array_to_use])?;
+
+        let slice = outputs[0]
             .as_slice()
             .ok_or_else(|| anyhow!("ORT output tensor not contiguous"))?;
 
@@ -66,30 +106,12 @@ pub fn run_face_model_onnx(input_array: &Array4<f32>) -> Result<Vec<f32>> {
     })
 }
 
-//==========================
-// EMOTION MODEL
-//==========================
-pub fn run_emotion_model_onnx(input_array: &Array4<f32>) -> Result<i64> {
-    if input_array.shape() != [1, 3, 160, 160] {
-        return Err(anyhow!("Unexpected input array shape: {:?}", input_array.shape()));
-    }
+// ==========================
+// RUN EMOTION MODEL
+// ==========================
 
-    EMOTION_SESSION.with(|cell| {
-        let mut slot = cell.borrow_mut();
-
-        if slot.is_none() {
-            let model_path: &'static Path =
-                Box::leak(Box::new(Path::new("models/emotion.onnx").to_owned()));
-
-            let session = ort_env()
-                .new_session_builder()?
-                .with_optimization_level(GraphOptimizationLevel::Basic)?
-                .with_model_from_file(model_path)?;
-
-            *slot = Some(session);
-        }
-
-        let session = slot.as_mut().unwrap();
+pub fn run_emotion_model_onnx(input_array: &Array4<f32>, model_path: &str) -> Result<i64> {
+    with_session(model_path, |session| {
         let outputs = session.run(vec![input_array.clone().into_dyn()])?;
 
         let scores: &[f32] = outputs[0]
@@ -100,8 +122,27 @@ pub fn run_emotion_model_onnx(input_array: &Array4<f32>) -> Result<i64> {
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap();
+            .ok_or_else(|| anyhow!("Empty output from emotion model"))?;
 
         Ok(idx as i64)
     })
+}
+
+// ==========================
+// WARM-UP
+// ==========================
+
+pub fn warm_up_onnx_models(model_paths: &[&str]) -> Result<()> {
+    tracing::info!("🔥 Warming up ONNX models");
+
+    let dummy = Array4::<f32>::zeros((1, 112, 112, 3));
+
+    for model_path in model_paths {
+        tracing::info!("⚡ Warming up {}", model_path);
+        let _ = run_face_model_onnx(&dummy, model_path)?;
+    }
+
+    tracing::info!("✅ ONNX models warmed");
+
+    Ok(())
 }

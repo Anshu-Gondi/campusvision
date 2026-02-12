@@ -30,7 +30,11 @@ ADMIN_JWT_SECRET = config("ADMIN_JWT_SECRET")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", default=False, cast=bool)
 
-ALLOWED_HOSTS = ["*"]
+
+ALLOWED_HOSTS = config(
+    "ALLOWED_HOSTS",
+    default="*"
+).split(",")
 
 # Application definition
 INSTALLED_APPS = [
@@ -61,6 +65,10 @@ MIDDLEWARE = [
 
 # Allow frontend (React/Tailwind app) to call APIs
 CORS_ALLOW_ALL_ORIGINS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://*.fly.dev",
+]
 
 ROOT_URLCONF = 'attendance_backend.urls'
 
@@ -133,6 +141,7 @@ USE_TZ = True
 
 # Static & Media
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

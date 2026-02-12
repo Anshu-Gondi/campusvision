@@ -1,10 +1,7 @@
-use axum::{
-    Router,
-    routing::{get, post},
-};
+use axum::{ Router, routing::{ get, post } };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use rustls::crypto::{CryptoProvider, aws_lc_rs};
+use rustls::crypto::{ CryptoProvider, aws_lc_rs };
 
 mod cctv;
 mod models;
@@ -34,10 +31,24 @@ pub fn cctv_router() -> Router {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    CryptoProvider::install_default(aws_lc_rs::default_provider())
-        .expect("Failed to install aws-lc-rs crypto provider");
+    dotenvy::dotenv().ok();
+
+    CryptoProvider::install_default(aws_lc_rs::default_provider()).expect(
+        "Failed to install aws-lc-rs crypto provider"
+    );
 
     tracing_subscriber::fmt::init();
+
+    // 🔥 Warm-up ONNX models before server starts
+    if std::env::var("WARM_UP_MODELS").is_ok() {
+        let model_paths: &[&'static str] = &[
+            "models/facenet.onnx",
+            "models/emotion.onnx",
+        ];
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::models::onnx_models::warm_up_onnx_models(model_paths)
+        }).await?;
+    }
 
     // ✅ Shared global state
     let state = Arc::new(AppState::new().await);
@@ -47,16 +58,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest("/", cctv_router())
         .nest("/", face_routes(state.clone())) // 🔥 NEW PART
         .nest("/", scheduler_routes(state.clone())) // 🔥 NEW PART
-        .route("/health", get(|| async { "ok" }));
+        .route(
+            "/health",
+            get(|| async { "ok" })
+        );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("🚀 Server running at http://{}", addr);
 
-    axum::serve(
-        tokio::net::TcpListener::bind(addr).await?,
-        app.into_make_service(),
-    )
-    .await?;
+    axum::serve(tokio::net::TcpListener::bind(addr).await?, app.into_make_service()).await?;
 
     Ok(())
 }

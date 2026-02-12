@@ -1,4 +1,4 @@
-use aws_sdk_s3::{ Client, primitives::ByteStream, config::Builder };
+use aws_sdk_s3::{ Client, primitives::ByteStream };
 use aws_config::{ meta::region::RegionProviderChain, BehaviorVersion };
 use anyhow::{ Result, anyhow };
 use tokio::fs;

@@ -4,14 +4,11 @@ use opencv::core::Vector;
 use opencv::imgcodecs;
 use opencv::prelude::*;
 use serde::Serialize;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
 
-thread_local! {
-    /// (role, camera_id) -> FaceTracker
-    static TRACKERS: RefCell<HashMap<(String, String), FaceTracker>> =
-        RefCell::new(HashMap::new());
-}
+static TRACKERS: Lazy<DashMap<(String, String), FaceTracker>> =
+    Lazy::new(|| DashMap::new());
 
 #[derive(Clone, Serialize)]
 pub struct CctvResult {
@@ -34,36 +31,45 @@ pub fn process_frame_rust(
     camera_id: &str,
     min_confidence: f32,
     min_track_hits: u32,
-    _model_path: Option<&str>,
 ) -> anyhow::Result<Vec<CctvResult>> {
+
     if !["student", "teacher"].contains(&role) {
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
-    // Decode once (sanity check only)
     let mat = imgcodecs::imdecode(
         &Vector::from_slice(frame_bytes),
         imgcodecs::IMREAD_COLOR,
     )?;
+
     if mat.empty() {
         return Ok(Vec::new());
     }
 
-    let raw_frames = vec![frame_bytes];
+    let key = (role.to_string(), camera_id.to_string());
 
-    let tracks = TRACKERS.with(|map| {
-        let mut map = map.borrow_mut();
-        let key = (role.to_string(), camera_id.to_string());
-        let tracker = map.entry(key).or_insert_with(|| FaceTracker::new(30));
-        tracker.update_from_bytes(raw_frames)
+    // 🔥 Get or create tracker
+    let mut tracker = TRACKERS.entry(key).or_insert_with(|| {
+        FaceTracker::new(
+            30,
+            "models/arcface.onnx".to_string(),
+            "models/emotion.onnx".to_string(),
+            Some((112, 112)),
+            Some("NHWC".to_string()),
+        )
     });
+
+    // IMPORTANT: clone frames if needed
+    let tracks = tracker.update_from_bytes(vec![frame_bytes]);
+
+    drop(tracker); // Explicitly release lock early
 
     let mut results = Vec::with_capacity(tracks.len());
 
     for track in tracks {
+
         let mut mark_now = None;
 
-        // 🔒 STRICT attendance rule (delegated to state.rs)
         if track.hits >= min_track_hits && track.confidence >= min_confidence {
             let marked = mark_tracked_face(&track, role);
             mark_now = Some(marked);
@@ -80,8 +86,8 @@ pub fn process_frame_rust(
             hits: track.hits,
             age: track.age,
             person_id: track.person_id.map(|id| id as u64),
-            name: None,     // resolve later via metadata service
-            roll_no: None,  // same
+            name: None,
+            roll_no: None,
             role: Some(role.to_string()),
             identified: track.person_id.is_some(),
             confidence: track.confidence as f64,
@@ -92,36 +98,38 @@ pub fn process_frame_rust(
     Ok(results)
 }
 
-pub fn get_tracked_faces_rust(role: &str, camera_id: &str) -> Vec<CctvResult> {
-    TRACKERS.with(|map| {
-        map.borrow()
-            .get(&(role.to_string(), camera_id.to_string()))
-            .map(|tracker| {
-                tracker
-                    .tracks
-                    .values()
-                    .map(|t| CctvResult {
-                        track_id: t.track_id as i32,
-                        bbox: (
-                            t.bbox.x,
-                            t.bbox.y,
-                            t.bbox.width,
-                            t.bbox.height,
-                        ),
-                        hits: t.hits,
-                        age: t.age,
-                        person_id: t.person_id.map(|id| id as u64),
-                        name: None,
-                        roll_no: None,
-                        role: None,
-                        identified: t.person_id.is_some(),
-                        confidence: t.confidence as f64,
-                        mark_now: None,
-                    })
-                    .collect()
+pub fn get_tracked_faces_rust(
+    role: &str,
+    camera_id: &str,
+) -> Vec<CctvResult> {
+
+    let key = (role.to_string(), camera_id.to_string());
+
+    if let Some(tracker) = TRACKERS.get(&key) {
+        tracker.tracks
+            .values()
+            .map(|t| CctvResult {
+                track_id: t.track_id as i32,
+                bbox: (
+                    t.bbox.x,
+                    t.bbox.y,
+                    t.bbox.width,
+                    t.bbox.height,
+                ),
+                hits: t.hits,
+                age: t.age,
+                person_id: t.person_id.map(|id| id as u64),
+                name: None,
+                roll_no: None,
+                role: None,
+                identified: t.person_id.is_some(),
+                confidence: t.confidence as f64,
+                mark_now: None,
             })
-            .unwrap_or_default()
-    })
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn clear_daily_rust() {
@@ -129,8 +137,5 @@ pub fn clear_daily_rust() {
 }
 
 pub fn clear_camera(role: &str, camera_id: &str) {
-    TRACKERS.with(|map| {
-        map.borrow_mut()
-            .remove(&(role.to_string(), camera_id.to_string()));
-    });
+    TRACKERS.remove(&(role.to_string(), camera_id.to_string()));
 }

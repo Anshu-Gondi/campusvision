@@ -1,20 +1,16 @@
 use crate::preprocessing;
 use intelligence_core::embeddings;
 use crate::models::onnx_models as ort_model;
-use opencv::{ core::{ Size, Mat, mean_std_dev, AlgorithmHint }, imgcodecs, imgproc };
+
 use opencv::prelude::*;
-use anyhow::{ anyhow, Result };
-use std::cell::RefCell;
+use anyhow::{anyhow, Result};
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use intelligence_core::utils::cosine_similarity;
+
+use tokio::task;
+
 use ndarray::Array4;
-
-thread_local! {
-    static MAT_BUF: RefCell<Mat> = RefCell::new(Mat::default());
-}
-
-static LAST_EMBEDDING: Lazy<Mutex<Option<Vec<f32>>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Debug)]
 pub struct DetectionResult {
@@ -23,126 +19,108 @@ pub struct DetectionResult {
     pub embedding: Option<Vec<f32>>,
 }
 
-/// Convert OpenCV Mat (BGR, u8) → NCHW Array4<f32>
-fn mat_to_array4(mat: &Mat) -> Result<Array4<f32>> {
-    let rows = mat.rows() as usize;
-    let cols = mat.cols() as usize;
+static LAST_EMBEDDING: Lazy<Mutex<Option<Vec<f32>>>> =
+    Lazy::new(|| Mutex::new(None));
 
-    let data = mat.data_bytes()?;
-    let mut arr = Array4::<f32>::zeros((1, 3, rows, cols));
+/* ============================================================
+   INTERNAL BLOCKING IMPLEMENTATION
+   ============================================================ */
 
-    for y in 0..rows {
-        for x in 0..cols {
-            let idx = (y * cols + x) * 3;
-            arr[[0, 0, y, x]] = (data[idx] as f32) / 255.0;
-            arr[[0, 1, y, x]] = (data[idx + 1] as f32) / 255.0;
-            arr[[0, 2, y, x]] = (data[idx + 2] as f32) / 255.0;
+fn detect_and_embed_blocking(
+    image_bytes: &[u8],
+    model_input_size: Option<(usize, usize)>,
+    layout: Option<String>,
+    enrollment: bool,
+) -> Result<DetectionResult> {
+
+    // 1️⃣ Preprocess
+    let (face_mat, rect, _landmarks) =
+        match preprocessing::preprocess_image_dynamic(
+            image_bytes,
+            model_input_size,
+        ) {
+            Ok(res) => res,
+            Err(_) => {
+                return Ok(DetectionResult {
+                    found: false,
+                    bbox: None,
+                    embedding: None,
+                });
+            }
+        };
+
+    // 2️⃣ Face area sanity check
+    let img_area = face_mat.rows() * face_mat.cols();
+    let face_area = face_mat.rows() * face_mat.cols();
+
+    if face_area < img_area / 20 {
+        return Ok(DetectionResult {
+            found: false,
+            bbox: None,
+            embedding: None,
+        });
+    }
+
+    // 3️⃣ Blur check
+    {
+        use opencv::{
+            core::{mean_std_dev, AlgorithmHint},
+            imgproc,
+        };
+
+        let mut gray = opencv::core::Mat::default();
+        imgproc::cvt_color(
+            &face_mat,
+            &mut gray,
+            imgproc::COLOR_RGB2GRAY,
+            0,
+            AlgorithmHint::ALGO_HINT_DEFAULT,
+        )?;
+
+        let mut lap = opencv::core::Mat::default();
+        imgproc::laplacian(
+            &gray,
+            &mut lap,
+            opencv::core::CV_64F,
+            1,
+            1.0,
+            0.0,
+            opencv::core::BORDER_DEFAULT,
+        )?;
+
+        let mut mean = opencv::core::Scalar::default();
+        let mut stddev = opencv::core::Scalar::default();
+
+        mean_std_dev(&lap, &mut mean, &mut stddev, &opencv::core::no_array())?;
+
+        if stddev[0] * stddev[0] < 30.0 {
+            return Ok(DetectionResult {
+                found: false,
+                bbox: None,
+                embedding: None,
+            });
         }
     }
 
-    Ok(arr)
-}
+    // 4️⃣ Convert to ndarray
+    let input_layout = layout.unwrap_or("NHWC".to_string());
+    let input_array =
+        preprocessing::mat_to_array(&face_mat, &input_layout)?;
 
-/// Detect faces → pick best → align → ONNX embedding
-pub fn detect_and_embed_rust(
-    image_bytes: &[u8],
-    model_path: Option<&str>
-) -> Result<DetectionResult> {
-    // ─────────────────────────────
-    // 1. Decode image (FIXED)
-    // ─────────────────────────────
-    let mat = imgcodecs::imdecode(
-        &opencv::core::Vector::from_slice(image_bytes),
-        imgcodecs::IMREAD_COLOR
-    )?;
+    let input_array4: Array4<f32> = input_array
+    .into_dimensionality()
+    .map_err(|_| anyhow!("Expected 4D tensor"))?;
 
-    if mat.empty() {
-        return Ok(DetectionResult {
-            found: false,
-            bbox: None,
-            embedding: None,
-        });
-    }
+    let embedding =
+        ort_model::run_face_model_onnx(
+            &input_array4,
+            "models/facenet.onnx",
+        )?;
 
-    let yunet_path = model_path.filter(|p| !p.is_empty());
-
-    // ─────────────────────────────
-    // 2. Face detection
-    // ─────────────────────────────
-    let faces = preprocessing::detect_faces(&mat, yunet_path.as_deref(), Size::new(320, 320), 0.6)?;
-
-    let Some((rect, landmarks)) = preprocessing::pick_best_face(&faces)? else {
-        return Ok(DetectionResult {
-            found: false,
-            bbox: None,
-            embedding: None,
-        });
-    };
-
-    // ─────────────────────────────
-    // Face size sanity check
-    // ─────────────────────────────
-    let img_area = mat.rows() * mat.cols();
-    let face_area = rect.width * rect.height;
-    if face_area < img_area / 7 {
-        return Ok(DetectionResult {
-            found: false,
-            bbox: None,
-            embedding: None,
-        });
-    }
-
-    // ─────────────────────────────
-    // Blur check
-    // ─────────────────────────────
-    let mut gray = Mat::default();
-    imgproc::cvt_color(
-        &mat,
-        &mut gray,
-        imgproc::COLOR_BGR2GRAY,
-        0,
-        AlgorithmHint::ALGO_HINT_DEFAULT
-    )?;
-
-    let mut lap = Mat::default();
-    imgproc::laplacian(
-        &gray,
-        &mut lap,
-        opencv::core::CV_64F,
-        1,
-        1.0,
-        0.0,
-        opencv::core::BORDER_DEFAULT
-    )?;
-
-    let mut mean = opencv::core::Scalar::default();
-    let mut stddev = opencv::core::Scalar::default();
-    mean_std_dev(&lap, &mut mean, &mut stddev, &opencv::core::no_array())?;
-
-    if stddev[0] * stddev[0] < 80.0 {
-        return Ok(DetectionResult {
-            found: false,
-            bbox: None,
-            embedding: None,
-        });
-    }
-
-    // ─────────────────────────────
-    // 4. Align face
-    // ─────────────────────────────
-    let face_mat = preprocessing::align_face(&mat, rect, &landmarks)?;
-
-    // ─────────────────────────────
-    // 5. ONNX embedding (FIXED)
-    // ─────────────────────────────
-    let input = mat_to_array4(&face_mat)?;
-    let embedding = ort_model::run_face_model_onnx(&input)?;
-
-    // ─────────────────────────────
-    // Replay protection
-    // ─────────────────────────────
-    {
+    // 5️⃣ Replay protection
+    if !enrollment {
         let mut last = LAST_EMBEDDING.lock().unwrap();
+
         if let Some(prev) = &*last {
             if cosine_similarity(prev, &embedding) >= 0.995 {
                 return Ok(DetectionResult {
@@ -152,6 +130,7 @@ pub fn detect_and_embed_rust(
                 });
             }
         }
+
         *last = Some(embedding.clone());
     }
 
@@ -162,22 +141,60 @@ pub fn detect_and_embed_rust(
     })
 }
 
-/// Detect → embed → add to index
-pub fn detect_and_add_person_rust(
-    image_bytes: &[u8],
+/* ============================================================
+   PUBLIC ASYNC API (AXUM SAFE)
+   ============================================================ */
+
+pub async fn detect_and_embed_rust(
+    image_bytes: Vec<u8>,
+    model_input_size: Option<(usize, usize)>,
+    layout: Option<String>,
+    enrollment: bool,
+) -> Result<DetectionResult> {
+
+    task::spawn_blocking(move || {
+        detect_and_embed_blocking(
+            &image_bytes,
+            model_input_size,
+            layout,
+            enrollment,
+        )
+    })
+    .await
+    .map_err(|e| anyhow!("Join error: {e}"))?
+}
+
+pub async fn detect_and_add_person_rust(
+    image_bytes: Vec<u8>,
     name: String,
     person_id: u64,
     roll_no: String,
-    role: String
+    role: String,
+    model_input_size: Option<(usize, usize)>,
+    layout: Option<String>,
 ) -> Result<usize> {
+
     if !["student", "teacher"].contains(&role.as_str()) {
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
-    let result = detect_and_embed_rust(image_bytes, None)?;
-    let embedding = result.embedding.ok_or_else(|| anyhow!("Embedding missing"))?;
+    let result = detect_and_embed_rust(
+        image_bytes,
+        model_input_size,
+        layout,
+        true,
+    ).await?;
 
-    let id = embeddings::add_face_embedding(embedding, name, person_id, roll_no, role)?;
+    let embedding =
+        result.embedding.ok_or_else(|| anyhow!("Embedding missing"))?;
+
+    let id = embeddings::add_face_embedding(
+        embedding,
+        name,
+        person_id,
+        roll_no,
+        role,
+    )?;
 
     Ok(id)
 }

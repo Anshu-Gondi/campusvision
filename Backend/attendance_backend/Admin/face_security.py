@@ -3,6 +3,8 @@ from django.conf import settings
 from django.http import JsonResponse
 from attendance.models import FaceRejectionLog
 from .utils import rust_client as rust_backend
+from PIL import Image
+import io
 
 SECRET = settings.ADMIN_JWT_SECRET
 RUST_BASE_URL = getattr(settings, "RUST_BASE_URL", "http://127.0.0.1:3000")
@@ -76,16 +78,47 @@ def log_face_rejection(
 def process_face_upload(file, role, admin=None, person_id=None):
     image_bytes = file.read()
 
-    # ── Detect + Embed (Rust HTTP) ─────────────────────────
+    # Image metadata (huge signal)
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        image_info = f"{img.format} {img.width}x{img.height}"
+    except Exception:
+        image_info = "unreadable"
+
+    # ── Detect + Embed (Rust) ───────────────────────────────
     try:
         result = rust_backend.detect_and_embed(image_bytes)
 
-    except Exception as e:
+    except rust_backend.RustAPIError as e:
+        reason = (
+            "rust_client_error"
+            if e.status and e.status < 500
+            else "rust_server_error"
+        )
+
         log_face_rejection(
-            reason="rust_failure",
+            reason=reason,
             role=role,
             admin=admin,
             person_id=person_id,
-            message=str(e),
+            message=(
+                f"status={e.status} "
+                f"error={e.error} "
+                f"raw={e.raw} "
+                f"image_bytes={len(image_bytes)} "
+                f"image_info={image_info}"
+            ),
         )
-        return None, None   # 🔴 HARD STOP
+        return None, None  # ⛔ HARD STOP
+
+    except Exception as e:
+        log_face_rejection(
+            reason="unexpected_exception",
+            role=role,
+            admin=admin,
+            person_id=person_id,
+            message=f"{type(e).__name__}: {str(e)}",
+        )
+        return None, None
+
+    return result, image_info
