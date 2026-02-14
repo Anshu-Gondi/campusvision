@@ -1,8 +1,14 @@
-use anyhow::{ anyhow, Result };
+use anyhow::{anyhow, Result};
+use ndarray::Array4;
 use once_cell::sync::OnceCell;
-use onnxruntime::{ environment::Environment, session::Session, GraphOptimizationLevel };
-use ndarray::{ Array4, ArrayD };
-use std::{ cell::RefCell, collections::HashMap };
+use onnxruntime::{environment::Environment, GraphOptimizationLevel};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    mpsc, Arc,
+};
+use std::thread;
+use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
 // ==========================
 // GLOBAL ORT ENVIRONMENT
@@ -20,129 +26,205 @@ fn ort_env() -> &'static Environment {
 }
 
 // ==========================
-// THREAD LOCAL SESSION CACHE
+// INFERENCE REQUEST
 // ==========================
 
-thread_local! {
-    static SESSION_CACHE: RefCell<HashMap<String, Session<'static>>> = RefCell::new(HashMap::new());
+struct InferenceRequest {
+    input: Array4<f32>,
+    respond_to: oneshot::Sender<Result<Vec<f32>>>,
 }
 
 // ==========================
-// LOAD OR GET SESSION
+// METRICS
 // ==========================
 
-fn with_session<F, T>(model_path: &str, f: F) -> Result<T>
-    where F: FnOnce(&mut Session<'static>) -> Result<T>
-{
-    let key = model_path.to_string();
-
-    SESSION_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-
-        if !cache.contains_key(&key) {
-            let builder = ort_env()
-                .new_session_builder()
-                .map_err(|e| anyhow!("Failed to create session builder: {e}"))?;
-
-            let builder = builder
-                .with_number_threads(1)?
-                .with_optimization_level(GraphOptimizationLevel::Basic)?;
-
-            let static_path: &'static str = Box::leak(model_path.to_string().into_boxed_str());
-
-            let session = builder
-                .with_model_from_file(static_path)
-                .map_err(|e| anyhow!("Failed to load model {model_path}: {e}"))?;
-
-            cache.insert(key.clone(), session);
-        }
-
-        let session = cache.get_mut(&key).ok_or_else(|| anyhow!("Session not found"))?;
-
-        f(session)
-    })
+#[derive(Default)]
+pub struct WorkerMetrics {
+    pub total_requests: AtomicUsize,
+    pub total_latency_ns: AtomicU64,
 }
 
-// ==========================
-// RUN FACE MODEL
-// ==========================
-
-pub fn run_face_model_onnx(input_array: &Array4<f32>, model_path: &str) -> Result<Vec<f32>> {
-    with_session(model_path, |session| {
-        let input_info = session.inputs
-            .iter()
-            .next()
-            .ok_or_else(|| anyhow!("Model has no inputs"))?;
-
-        let model_shape: Vec<Option<usize>> = input_info.dimensions
-            .iter()
-            .map(|d| d.map(|x| x as usize))
-            .collect();
-
-        let input_shape = input_array.shape();
-
-        let array_to_use: ArrayD<f32> = match (model_shape.as_slice(), input_shape) {
-            ([Some(_), Some(c), Some(_), Some(_)], [_, cc, _, _]) if *cc == *c => {
-                input_array.clone().into_dyn()
-            }
-            ([Some(_), Some(_), Some(_), Some(c)], [_, _, _, cc]) if *cc == *c => {
-                input_array.clone().into_dyn()
-            }
-            _ =>
-                anyhow::bail!(
-                    "Input shape/layout mismatch: model {:?}, input {:?}",
-                    model_shape,
-                    input_shape
-                ),
-        };
-
-        let outputs = session.run(vec![array_to_use])?;
-
-        let slice = outputs[0]
-            .as_slice()
-            .ok_or_else(|| anyhow!("ORT output tensor not contiguous"))?;
-
-        Ok(slice.to_vec())
-    })
-}
-
-// ==========================
-// RUN EMOTION MODEL
-// ==========================
-
-pub fn run_emotion_model_onnx(input_array: &Array4<f32>, model_path: &str) -> Result<i64> {
-    with_session(model_path, |session| {
-        let outputs = session.run(vec![input_array.clone().into_dyn()])?;
-
-        let scores: &[f32] = outputs[0]
-            .as_slice()
-            .ok_or_else(|| anyhow!("ORT output tensor not contiguous"))?;
-
-        let (idx, _) = scores
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .ok_or_else(|| anyhow!("Empty output from emotion model"))?;
-
-        Ok(idx as i64)
-    })
-}
-
-// ==========================
-// WARM-UP
-// ==========================
-
-pub fn warm_up_onnx_models(model_paths: &[&str]) -> Result<()> {
-    tracing::info!("🔥 Warming up ONNX models");
-
-    let dummy = Array4::<f32>::zeros((1, 112, 112, 3));
-
-    for model_path in model_paths {
-        tracing::info!("⚡ Warming up {}", model_path);
-        let _ = run_face_model_onnx(&dummy, model_path)?;
+impl WorkerMetrics {
+    pub fn record(&self, duration: Duration) {
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.total_latency_ns
+            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
     }
 
-    tracing::info!("✅ ONNX models warmed");
+    pub fn average_latency_ms(&self) -> f64 {
+        let reqs = self.total_requests.load(Ordering::Relaxed);
+        if reqs == 0 {
+            return 0.0;
+        }
+        let total_ns = self.total_latency_ns.load(Ordering::Relaxed);
+        (total_ns as f64 / reqs as f64) / 1_000_000.0
+    }
+}
 
-    Ok(())
+// ==========================
+// INFERENCE POOL
+// ==========================
+
+pub struct InferencePool {
+    senders: Vec<mpsc::SyncSender<InferenceRequest>>,
+    counter: AtomicUsize,
+    shutdown: Arc<AtomicBool>,
+    metrics: Vec<Arc<WorkerMetrics>>,
+    ready: Arc<AtomicBool>, // 🔥 NEW
+}
+
+impl InferencePool {
+    pub fn new(model_path: &str, workers: usize) -> Self {
+        assert!(workers > 0, "workers must be > 0");
+
+        let mut senders = Vec::with_capacity(workers);
+        let mut metrics = Vec::with_capacity(workers);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false)); // 🔥 NEW
+
+        for worker_id in 0..workers {
+            let (tx, rx) = mpsc::sync_channel(50);
+            let worker_metrics = Arc::new(WorkerMetrics::default());
+
+            start_worker(
+                worker_id,
+                rx,
+                model_path.to_string(),
+                shutdown.clone(),
+                worker_metrics.clone(),
+            );
+
+            senders.push(tx);
+            metrics.push(worker_metrics);
+        }
+
+        // 🔥 Mark pool ready after workers spawned
+        ready.store(true, Ordering::Relaxed);
+
+        Self {
+            senders,
+            counter: AtomicUsize::new(0),
+            shutdown,
+            metrics,
+            ready,
+        }
+    }
+
+    // 🔥 Async inference entrypoint (BACKPRESSURE SAFE)
+    pub async fn infer(&self, input: Array4<f32>) -> Result<Vec<f32>> {
+        if !self.is_ready() {
+            return Err(anyhow!("InferencePool not ready"));
+        }
+
+        let (tx, rx) = oneshot::channel();
+
+        let index =
+            self.counter.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+
+        // ✅ BLOCKING send (correct for SaaS backpressure)
+        self.senders[index]
+            .send(InferenceRequest {
+                input,
+                respond_to: tx,
+            })
+            .map_err(|_| anyhow!("Inference queue closed"))?;
+
+        rx.await.map_err(|_| anyhow!("Worker crashed"))?
+    }
+
+    // 🔥 Warm up ALL workers
+    pub fn warm_up(&self, dummy: Array4<f32>) {
+        for sender in &self.senders {
+            let _ = sender.send(InferenceRequest {
+                input: dummy.clone(),
+                respond_to: oneshot::channel().0,
+            });
+        }
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+
+    pub fn print_metrics(&self) {
+        for (i, m) in self.metrics.iter().enumerate() {
+            println!(
+                "Worker {} → avg latency: {:.2} ms | total reqs: {}",
+                i,
+                m.average_latency_ms(),
+                m.total_requests.load(Ordering::Relaxed)
+            );
+        }
+    }
+}
+
+// ==========================
+// WORKER THREAD
+// ==========================
+
+fn start_worker(
+    worker_id: usize,
+    receiver: mpsc::Receiver<InferenceRequest>,
+    model_path: String,
+    shutdown: Arc<AtomicBool>,
+    metrics: Arc<WorkerMetrics>,
+) {
+    thread::spawn(move || {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(cores) = core_affinity::get_core_ids() {
+                if let Some(core) = cores.get(worker_id % cores.len()) {
+                    core_affinity::set_for_current(*core);
+                }
+            }
+        }
+
+        let env = ort_env();
+
+        let session = env
+            .new_session_builder()
+            .expect("Failed builder")
+            .with_number_threads(1)
+            .expect("Thread config failed")
+            .with_optimization_level(GraphOptimizationLevel::All)
+            .expect("Opt level failed")
+            .with_model_from_file(&model_path)
+            .expect("Model load failed");
+
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(req) => {
+                    let start = Instant::now();
+
+                    let result = session
+                        .run(vec![req.input.into_dyn()])
+                        .map_err(|e| anyhow!("{e}"))
+                        .and_then(|outputs| {
+                            let slice = outputs[0]
+                                .as_slice()
+                                .ok_or_else(|| anyhow!("Output not contiguous"))?;
+                            Ok(slice.to_vec())
+                        });
+
+                    metrics.record(start.elapsed());
+
+                    let _ = req.respond_to.send(result);
+                }
+
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        println!("Worker {} shutting down.", worker_id);
+    });
 }

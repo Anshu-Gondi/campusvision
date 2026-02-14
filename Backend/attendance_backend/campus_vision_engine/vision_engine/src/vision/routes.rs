@@ -1,6 +1,6 @@
 use axum::{
     extract::{ State, Json },
-    routing::post,
+    routing::{ post, get },
     Router,
     http::StatusCode,
     response::IntoResponse,
@@ -140,7 +140,6 @@ pub async fn detect_and_embed_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DetectEmbedRequest>
 ) -> ApiResult<DetectEmbedResponse> {
-
     let mut redis = state.redis.lock().await;
 
     if !state.security.allow_request(&mut redis, "detect_embed").await {
@@ -152,27 +151,24 @@ pub async fn detect_and_embed_handler(
 
     let enrollment = payload.enrollment.unwrap_or(false);
 
-    // 🔒 HARD LIMIT: only ONE inference at a time
-    let _permit = state.face_infer_sem.acquire().await.unwrap();
-
     // 🚀 JUST CALL THE ASYNC FUNCTION DIRECTLY
     let result = detect_and_embed_rust(
+        state.clone(),
         payload.image,
-        None,          // model_input_size
-        None,          // layout
-        enrollment,
-    )
-    .await
-    .map_err(|e| ApiErr {
+        None,
+        enrollment
+    ).await.map_err(|e| ApiErr {
         status: StatusCode::BAD_REQUEST,
         message: e.to_string(),
     })?;
 
-    Ok(Json(DetectEmbedResponse {
-        found: result.found,
-        bbox: result.bbox,
-        embedding: result.embedding,
-    }))
+    Ok(
+        Json(DetectEmbedResponse {
+            found: result.found,
+            bbox: result.bbox,
+            embedding: result.embedding,
+        })
+    )
 }
 
 pub async fn detect_and_add_person_handler(
@@ -309,22 +305,16 @@ pub async fn verify_face_handler(
         });
     }
 
-    // 🔒 HARD LIMIT: only ONE inference at a time
-    let _permit = state.face_infer_sem.acquire().await.unwrap();
-
-    let similarity = tokio::task::spawn_blocking(move || {
-        // provide default None for missing arguments
-        verify_face_onnx(payload.image, &payload.known_embedding, None, None)
-    })
-    .await
-    .map_err(|_| ApiErr {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: "Inference task panicked".into(),
-    })?
-    .map_err(|e| ApiErr {
-        status: StatusCode::BAD_REQUEST,
-        message: e.to_string(),
-    })?;
+    let similarity = super::recognition
+        ::verify_face_with_pool(state.clone(), payload.image, payload.known_embedding).await
+        .map_err(|_| ApiErr {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "Inference task panicked".into(),
+        })?
+        .map_err(|e| ApiErr {
+            status: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+        })?;
 
     Ok(Json(VerifyFaceResponse { similarity }))
 }
@@ -343,25 +333,19 @@ pub async fn detect_emotion_handler(
         });
     }
 
-    let _permit = state.face_infer_sem.acquire().await.unwrap();
-
-    let emotion = tokio::task::spawn_blocking(move || {
-        // provide default None for missing arguments
-        detect_emotion_onnx(payload.image, None, None)
-    })
-    .await
-    .map_err(|_| ApiErr {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: "Inference task panicked".into(),
-    })?
-    .map_err(|e| ApiErr {
-        status: StatusCode::BAD_REQUEST,
-        message: e.to_string(),
-    })?;
+    let emotion = super::recognition
+        ::detect_emotion_with_pool(state.clone(), payload.image).await
+        .map_err(|_| ApiErr {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "Inference task panicked".into(),
+        })?
+        .map_err(|e| ApiErr {
+            status: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+        })?;
 
     Ok(Json(DetectEmotionResponse { emotion }))
 }
-
 
 /// POST /face/save
 pub async fn save_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -456,6 +440,14 @@ pub async fn load_face_db_handler(State(state): State<Arc<AppState>>) -> impl In
     }
 }
 
+pub async fn inference_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.face_pool.is_ready() {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "warming")
+    }
+}
+
 // ── Routes ──────────────────────────────────────────────────────────────
 
 pub fn face_routes(state: Arc<AppState>) -> Router {
@@ -470,5 +462,6 @@ pub fn face_routes(state: Arc<AppState>) -> Router {
         .route("/face/load", post(load_face_db_handler))
         .route("/face/save", post(save_face_db_handler))
         .route("/face/init", post(init_face_db_handler))
+        .route("/health/inference", get(inference_health))
         .with_state(state)
 }

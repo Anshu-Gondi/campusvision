@@ -1,4 +1,6 @@
-use crate::{models::onnx_models, preprocessing::preprocess_image_dynamic};
+use crate::preprocessing::preprocess_image_dynamic;
+use crate::app_state::AppState;
+use std::sync::Arc;
 use intelligence_core::utils::cosine_similarity;
 use anyhow::{anyhow, Result};
 use ndarray::Array4;
@@ -48,36 +50,49 @@ pub fn mat_to_array4_dynamic(mat: &opencv::core::Mat, layout: &str) -> Result<Ar
 }
 
 /// Verify face by comparing embedding similarity
-pub fn verify_face_onnx(
+pub async fn verify_face_with_pool(
+    state: Arc<AppState>,
     input_image: Vec<u8>,
-    known_embedding: &[f32],
+    known_embedding: Vec<f32>,
     model_input_size: Option<(usize, usize)>,
     layout: Option<&str>,
 ) -> Result<f32> {
     let layout_str = layout.unwrap_or("NHWC");
 
-    // preprocess → aligned RGB face
+    // 1️⃣ Preprocess
     let (face_mat, _, _) = preprocess_image_dynamic(&input_image, model_input_size)?;
 
-    // convert OpenCV Mat → ndarray
+    // 2️⃣ Convert → tensor
     let input_tensor = mat_to_array4_dynamic(&face_mat, layout_str)?;
 
-    // run FaceNet ONNX
-    let emb_vec = onnx_models::run_face_model_onnx(&input_tensor, "models/facenet.onnx")?;
+    // 3️⃣ Send to inference pool
+    let embedding = state
+        .inference_pool
+        .run_face_embedding(input_tensor)
+        .await?;
 
-    Ok(cosine_similarity(&emb_vec, known_embedding))
+    // 4️⃣ Compute similarity (pure CPU)
+    Ok(cosine_similarity(&embedding, &known_embedding))
 }
 
 /// Detect emotion from face image
-pub fn detect_emotion_onnx(
+pub async fn detect_emotion_with_pool(
+    state: Arc<AppState>,
     input_image: Vec<u8>,
     model_input_size: Option<(usize, usize)>,
     layout: Option<&str>,
 ) -> Result<i64> {
     let layout_str = layout.unwrap_or("NHWC");
 
+    // 1️⃣ Preprocess
     let (face_mat, _, _) = preprocess_image_dynamic(&input_image, model_input_size)?;
+
+    // 2️⃣ Convert → tensor
     let input_tensor = mat_to_array4_dynamic(&face_mat, layout_str)?;
 
-    onnx_models::run_emotion_model_onnx(&input_tensor, "models/emotion.onnx")
+    // 3️⃣ Send to inference pool
+    state
+        .inference_pool
+        .run_emotion(input_tensor)
+        .await
 }

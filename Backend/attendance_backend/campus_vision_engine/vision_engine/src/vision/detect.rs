@@ -1,15 +1,13 @@
 use crate::preprocessing;
+use crate::app::AppState;
+
 use intelligence_core::embeddings;
-use crate::models::onnx_models as ort_model;
+use intelligence_core::utils::cosine_similarity;
 
 use opencv::prelude::*;
 use anyhow::{anyhow, Result};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
-use intelligence_core::utils::cosine_similarity;
-
-use tokio::task;
-
 use ndarray::Array4;
 
 #[derive(Debug)]
@@ -23,21 +21,26 @@ static LAST_EMBEDDING: Lazy<Mutex<Option<Vec<f32>>>> =
     Lazy::new(|| Mutex::new(None));
 
 /* ============================================================
-   INTERNAL BLOCKING IMPLEMENTATION
+   INTERNAL ASYNC IMPLEMENTATION (POOL-BASED)
    ============================================================ */
 
-fn detect_and_embed_blocking(
-    image_bytes: &[u8],
-    model_input_size: Option<(usize, usize)>,
+async fn detect_and_embed_internal(
+    state: Arc<AppState>,
+    image_bytes: Vec<u8>,
     layout: Option<String>,
     enrollment: bool,
 ) -> Result<DetectionResult> {
 
-    // 1️⃣ Preprocess
+    // 1️⃣ Get model input size
+    let (model_h, model_w) =
+        state.face_pool.get_model_input_size()?; // if you exposed it
+        // OR hardcode if fixed: (160, 160)
+
+    // 2️⃣ Preprocess image
     let (face_mat, rect, _landmarks) =
         match preprocessing::preprocess_image_dynamic(
-            image_bytes,
-            model_input_size,
+            &image_bytes,
+            Some((model_h, model_w)),
         ) {
             Ok(res) => res,
             Err(_) => {
@@ -49,7 +52,7 @@ fn detect_and_embed_blocking(
             }
         };
 
-    // 2️⃣ Face area sanity check
+    // 3️⃣ Face area sanity check
     let img_area = face_mat.rows() * face_mat.cols();
     let face_area = face_mat.rows() * face_mat.cols();
 
@@ -61,12 +64,9 @@ fn detect_and_embed_blocking(
         });
     }
 
-    // 3️⃣ Blur check
+    // 4️⃣ Blur check
     {
-        use opencv::{
-            core::{mean_std_dev, AlgorithmHint},
-            imgproc,
-        };
+        use opencv::{core::{mean_std_dev, AlgorithmHint}, imgproc};
 
         let mut gray = opencv::core::Mat::default();
         imgproc::cvt_color(
@@ -90,7 +90,6 @@ fn detect_and_embed_blocking(
 
         let mut mean = opencv::core::Scalar::default();
         let mut stddev = opencv::core::Scalar::default();
-
         mean_std_dev(&lap, &mut mean, &mut stddev, &opencv::core::no_array())?;
 
         if stddev[0] * stddev[0] < 30.0 {
@@ -102,25 +101,19 @@ fn detect_and_embed_blocking(
         }
     }
 
-    // 4️⃣ Convert to ndarray
-    let input_layout = layout.unwrap_or("NHWC".to_string());
-    let input_array =
-        preprocessing::mat_to_array(&face_mat, &input_layout)?;
-
+    // 5️⃣ Convert Mat → ndarray
+    let input_layout = layout.unwrap_or_else(|| "NCHW".to_string());
+    let input_array = preprocessing::mat_to_array(&face_mat, &input_layout)?;
     let input_array4: Array4<f32> = input_array
-    .into_dimensionality()
-    .map_err(|_| anyhow!("Expected 4D tensor"))?;
+        .into_dimensionality()
+        .map_err(|_| anyhow!("Expected 4D tensor"))?;
 
-    let embedding =
-        ort_model::run_face_model_onnx(
-            &input_array4,
-            "models/facenet.onnx",
-        )?;
+    // 🔥 6️⃣ INFERENCE THROUGH POOL (NON-BLOCKING)
+    let embedding = state.face_pool.infer(input_array4).await?;
 
-    // 5️⃣ Replay protection
+    // 7️⃣ Replay protection
     if !enrollment {
         let mut last = LAST_EMBEDDING.lock().unwrap();
-
         if let Some(prev) = &*last {
             if cosine_similarity(prev, &embedding) >= 0.995 {
                 return Ok(DetectionResult {
@@ -130,7 +123,6 @@ fn detect_and_embed_blocking(
                 });
             }
         }
-
         *last = Some(embedding.clone());
     }
 
@@ -142,35 +134,30 @@ fn detect_and_embed_blocking(
 }
 
 /* ============================================================
-   PUBLIC ASYNC API (AXUM SAFE)
+   PUBLIC API
    ============================================================ */
 
 pub async fn detect_and_embed_rust(
+    state: Arc<AppState>,
     image_bytes: Vec<u8>,
-    model_input_size: Option<(usize, usize)>,
     layout: Option<String>,
     enrollment: bool,
 ) -> Result<DetectionResult> {
-
-    task::spawn_blocking(move || {
-        detect_and_embed_blocking(
-            &image_bytes,
-            model_input_size,
-            layout,
-            enrollment,
-        )
-    })
-    .await
-    .map_err(|e| anyhow!("Join error: {e}"))?
+    detect_and_embed_internal(
+        state,
+        image_bytes,
+        layout,
+        enrollment,
+    ).await
 }
 
 pub async fn detect_and_add_person_rust(
+    state: Arc<AppState>,
     image_bytes: Vec<u8>,
     name: String,
     person_id: u64,
     roll_no: String,
     role: String,
-    model_input_size: Option<(usize, usize)>,
     layout: Option<String>,
 ) -> Result<usize> {
 
@@ -179,8 +166,8 @@ pub async fn detect_and_add_person_rust(
     }
 
     let result = detect_and_embed_rust(
+        state,
         image_bytes,
-        model_input_size,
         layout,
         true,
     ).await?;
