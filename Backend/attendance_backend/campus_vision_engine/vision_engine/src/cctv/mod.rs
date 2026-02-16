@@ -2,3 +2,7 @@ pub mod state;
 pub mod tracker;
 pub mod api;
 pub mod routes;
+pub mod detector;
+pub mod embedding_engine;
+pub mod identity_resolver;
+pub mod track_manager;

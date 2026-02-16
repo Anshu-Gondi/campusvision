@@ -1,14 +1,25 @@
 use crate::cctv::state::*;
 use crate::cctv::tracker::FaceTracker;
+use crate::app::AppState;
+
 use opencv::core::Vector;
 use opencv::imgcodecs;
 use opencv::prelude::*;
+
 use serde::Serialize;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 
 static TRACKERS: Lazy<DashMap<(String, String), FaceTracker>> =
     Lazy::new(|| DashMap::new());
+
+static GLOBAL_STATE: Lazy<Arc<AppState>> =
+    Lazy::new(|| {
+        tokio::runtime::Handle::current()
+            .block_on(AppState::new())
+            .into()
+    });
 
 #[derive(Clone, Serialize)]
 pub struct CctvResult {
@@ -25,7 +36,7 @@ pub struct CctvResult {
     pub mark_now: Option<bool>,
 }
 
-pub fn process_frame_rust(
+pub async fn process_frame_rust(
     frame_bytes: &[u8],
     role: &str,
     camera_id: &str,
@@ -48,21 +59,29 @@ pub fn process_frame_rust(
 
     let key = (role.to_string(), camera_id.to_string());
 
-    // 🔥 Get or create tracker
-    let mut tracker = TRACKERS.entry(key).or_insert_with(|| {
-        FaceTracker::new(
-            30,
-            "models/arcface.onnx".to_string(),
-            "models/emotion.onnx".to_string(),
-            Some((112, 112)),
-            Some("NHWC".to_string()),
-        )
-    });
+    // 🔥 Get or create tracker (NO async inside lock)
+    let mut tracker = TRACKERS
+        .entry(key.clone())
+        .or_insert_with(|| {
+            FaceTracker::new(
+                30,
+                GLOBAL_STATE.clone(),
+                Some((112, 112)),
+                Some("NHWC".to_string()),
+            )
+        });
 
-    // IMPORTANT: clone frames if needed
-    let tracks = tracker.update_from_bytes(vec![frame_bytes]);
+    // IMPORTANT: clone tracker to avoid holding DashMap lock during await
+    let mut tracker_owned = tracker.clone();
+    drop(tracker);
 
-    drop(tracker); // Explicitly release lock early
+    // 🔥 Async update
+    let tracks = tracker_owned
+        .update_from_bytes(vec![frame_bytes])
+        .await?;
+
+    // Write back updated tracker
+    TRACKERS.insert(key, tracker_owned);
 
     let mut results = Vec::with_capacity(tracks.len());
 
@@ -70,7 +89,9 @@ pub fn process_frame_rust(
 
         let mut mark_now = None;
 
-        if track.hits >= min_track_hits && track.confidence >= min_confidence {
+        if track.hits >= min_track_hits
+            && track.confidence >= min_confidence
+        {
             let marked = mark_tracked_face(&track, role);
             mark_now = Some(marked);
         }
@@ -97,6 +118,7 @@ pub fn process_frame_rust(
 
     Ok(results)
 }
+
 
 pub fn get_tracked_faces_rust(
     role: &str,
