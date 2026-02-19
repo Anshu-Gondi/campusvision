@@ -1,6 +1,7 @@
 use intelligence_core::embeddings::batch_search;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct IdentityResolver;
 
 impl IdentityResolver {

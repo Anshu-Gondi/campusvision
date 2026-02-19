@@ -41,7 +41,8 @@ async fn detect_and_embed_internal(
         match preprocessing::preprocess_image_dynamic(
             &image_bytes,
             Some((model_h, model_w)),
-        ) {
+            state.yunet_pool.clone(),
+        ).await {
             Ok(res) => res,
             Err(_) => {
                 return Ok(DetectionResult {

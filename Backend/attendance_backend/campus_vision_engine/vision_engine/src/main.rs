@@ -32,27 +32,40 @@ pub fn cctv_router() -> Router<Arc<AppState>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 🔥 Panic Hook
-    std::panic::set_hook(
-        Box::new(|panic_info| {
-            println!("🔥 PANIC OCCURRED: {:?}", panic_info);
-        })
-    );
+    std::panic::set_hook(Box::new(|panic_info| {
+        println!("🔥 PANIC OCCURRED: {:?}", panic_info);
+    }));
 
     dotenvy::dotenv().ok();
 
-    // 🔐 Install aws-lc-rs crypto
-    CryptoProvider::install_default(aws_lc_rs::default_provider()).expect(
-        "Failed to install aws-lc-rs crypto provider"
-    );
+    CryptoProvider::install_default(aws_lc_rs::default_provider())
+        .expect("Failed to install aws-lc-rs crypto provider");
 
     tracing_subscriber::fmt::init();
 
     // ✅ Initialize Global State
     let state = Arc::new(AppState::new().await);
 
+    // ✅ Root Router with State
+    let app = Router::new()
+        .merge(cctv_router())
+        .merge(face_routes())
+        .merge(scheduler_routes())
+        .route("/health", get(|| async { "ok" }))
+        .with_state(state.clone());
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+
+    tracing::info!("🚀 Server running at http://{}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    let server = axum::serve(listener, app.into_make_service());
+
     let shutdown_signal = async {
-        tokio::signal::ctrl_c().await.expect("Failed to listen for shutdown");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for shutdown");
     };
 
     tokio::select! {
@@ -63,23 +76,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.emotion_pool.shutdown();
         }
     }
-
-    // ✅ Root Router with State
-    let app = Router::new()
-        .merge(cctv_router())
-        .merge(face_routes())
-        .merge(scheduler_routes())
-        .route(
-            "/health",
-            get(|| async { "ok" })
-        )
-        .with_state(state);
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-
-    tracing::info!("🚀 Server running at http://{}", addr);
-
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app.into_make_service()).await?;
 
     Ok(())
 }

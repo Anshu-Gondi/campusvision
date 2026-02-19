@@ -11,15 +11,11 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 
-static TRACKERS: Lazy<DashMap<(String, String), FaceTracker>> =
-    Lazy::new(|| DashMap::new());
+static TRACKERS: Lazy<DashMap<(String, String), FaceTracker>> = Lazy::new(|| DashMap::new());
 
-static GLOBAL_STATE: Lazy<Arc<AppState>> =
-    Lazy::new(|| {
-        tokio::runtime::Handle::current()
-            .block_on(AppState::new())
-            .into()
-    });
+static GLOBAL_STATE: Lazy<Arc<AppState>> = Lazy::new(|| {
+    tokio::runtime::Handle::current().block_on(AppState::new()).into()
+});
 
 #[derive(Clone, Serialize)]
 pub struct CctvResult {
@@ -41,17 +37,13 @@ pub async fn process_frame_rust(
     role: &str,
     camera_id: &str,
     min_confidence: f32,
-    min_track_hits: u32,
+    min_track_hits: u32
 ) -> anyhow::Result<Vec<CctvResult>> {
-
     if !["student", "teacher"].contains(&role) {
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
-    let mat = imgcodecs::imdecode(
-        &Vector::from_slice(frame_bytes),
-        imgcodecs::IMREAD_COLOR,
-    )?;
+    let mat = imgcodecs::imdecode(&Vector::from_slice(frame_bytes), imgcodecs::IMREAD_COLOR)?;
 
     if mat.empty() {
         return Ok(Vec::new());
@@ -60,25 +52,16 @@ pub async fn process_frame_rust(
     let key = (role.to_string(), camera_id.to_string());
 
     // 🔥 Get or create tracker (NO async inside lock)
-    let mut tracker = TRACKERS
-        .entry(key.clone())
-        .or_insert_with(|| {
-            FaceTracker::new(
-                30,
-                GLOBAL_STATE.clone(),
-                Some((112, 112)),
-                Some("NHWC".to_string()),
-            )
-        });
+    let mut tracker = TRACKERS.entry(key.clone()).or_insert_with(|| {
+        FaceTracker::new(30, GLOBAL_STATE.clone(), Some((112, 112)), Some("NHWC".to_string()))
+    });
 
     // IMPORTANT: clone tracker to avoid holding DashMap lock during await
-    let mut tracker_owned = tracker.clone();
+    let mut tracker_owned = tracker.value().clone();
     drop(tracker);
 
     // 🔥 Async update
-    let tracks = tracker_owned
-        .update_from_bytes(vec![frame_bytes])
-        .await?;
+    let tracks = tracker_owned.update_from_bytes(vec![frame_bytes]).await?;
 
     // Write back updated tracker
     TRACKERS.insert(key, tracker_owned);
@@ -86,24 +69,16 @@ pub async fn process_frame_rust(
     let mut results = Vec::with_capacity(tracks.len());
 
     for track in tracks {
-
         let mut mark_now = None;
 
-        if track.hits >= min_track_hits
-            && track.confidence >= min_confidence
-        {
+        if track.hits >= min_track_hits && track.confidence >= min_confidence {
             let marked = mark_tracked_face(&track, role);
             mark_now = Some(marked);
         }
 
         results.push(CctvResult {
             track_id: track.track_id as i32,
-            bbox: (
-                track.bbox.x,
-                track.bbox.y,
-                track.bbox.width,
-                track.bbox.height,
-            ),
+            bbox: (track.bbox.x, track.bbox.y, track.bbox.width, track.bbox.height),
             hits: track.hits,
             age: track.age,
             person_id: track.person_id.map(|id| id as u64),
@@ -119,25 +94,16 @@ pub async fn process_frame_rust(
     Ok(results)
 }
 
-
-pub fn get_tracked_faces_rust(
-    role: &str,
-    camera_id: &str,
-) -> Vec<CctvResult> {
-
+pub fn get_tracked_faces_rust(role: &str, camera_id: &str) -> Vec<CctvResult> {
     let key = (role.to_string(), camera_id.to_string());
 
     if let Some(tracker) = TRACKERS.get(&key) {
-        tracker.tracks
-            .values()
+        tracker
+            .value()
+            .manager.tracks.values()
             .map(|t| CctvResult {
                 track_id: t.track_id as i32,
-                bbox: (
-                    t.bbox.x,
-                    t.bbox.y,
-                    t.bbox.width,
-                    t.bbox.height,
-                ),
+                bbox: (t.bbox.x, t.bbox.y, t.bbox.width, t.bbox.height),
                 hits: t.hits,
                 age: t.age,
                 person_id: t.person_id.map(|id| id as u64),

@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use opencv::{
     core::{Mat, Size},
-    imgproc,
     objdetect::FaceDetectorYN,
     prelude::*,
 };

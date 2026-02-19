@@ -1,8 +1,8 @@
 use crate::preprocessing::preprocess_image_dynamic;
-use crate::app_state::AppState;
+use crate::app::AppState;
 use std::sync::Arc;
 use intelligence_core::utils::cosine_similarity;
-use anyhow::{anyhow, Result};
+use anyhow::{ anyhow, Result };
 use ndarray::Array4;
 use opencv::prelude::*;
 
@@ -20,15 +20,17 @@ pub fn mat_to_array4_dynamic(mat: &opencv::core::Mat, layout: &str) -> Result<Ar
     let mut array = match layout {
         "NCHW" => Array4::<f32>::zeros((1, 3, rows, cols)),
         "NHWC" => Array4::<f32>::zeros((1, rows, cols, 3)),
-        _ => return Err(anyhow!("Unsupported layout: {}", layout)),
+        _ => {
+            return Err(anyhow!("Unsupported layout: {}", layout));
+        }
     };
 
     for y in 0..rows {
         for x in 0..cols {
             let idx = (y * cols + x) * 3;
-            let r = data[idx] as f32 / 255.0;
-            let g = data[idx + 1] as f32 / 255.0;
-            let b = data[idx + 2] as f32 / 255.0;
+            let r = (data[idx] as f32) / 255.0;
+            let g = (data[idx + 1] as f32) / 255.0;
+            let b = (data[idx + 2] as f32) / 255.0;
 
             match layout {
                 "NCHW" => {
@@ -55,21 +57,22 @@ pub async fn verify_face_with_pool(
     input_image: Vec<u8>,
     known_embedding: Vec<f32>,
     model_input_size: Option<(usize, usize)>,
-    layout: Option<&str>,
+    layout: Option<&str>
 ) -> Result<f32> {
     let layout_str = layout.unwrap_or("NHWC");
 
     // 1️⃣ Preprocess
-    let (face_mat, _, _) = preprocess_image_dynamic(&input_image, model_input_size)?;
+    let (face_mat, _, _) = preprocess_image_dynamic(
+        &input_image,
+        model_input_size,
+        state.yunet_pool.clone()
+    ).await?;
 
     // 2️⃣ Convert → tensor
     let input_tensor = mat_to_array4_dynamic(&face_mat, layout_str)?;
 
     // 3️⃣ Send to inference pool
-    let embedding = state
-        .inference_pool
-        .run_face_embedding(input_tensor)
-        .await?;
+    let embedding = state.face_pool.run_face_embedding(input_tensor).await?;
 
     // 4️⃣ Compute similarity (pure CPU)
     Ok(cosine_similarity(&embedding, &known_embedding))
@@ -80,19 +83,20 @@ pub async fn detect_emotion_with_pool(
     state: Arc<AppState>,
     input_image: Vec<u8>,
     model_input_size: Option<(usize, usize)>,
-    layout: Option<&str>,
+    layout: Option<&str>
 ) -> Result<i64> {
     let layout_str = layout.unwrap_or("NHWC");
 
     // 1️⃣ Preprocess
-    let (face_mat, _, _) = preprocess_image_dynamic(&input_image, model_input_size)?;
+    let (face_mat, _, _) = preprocess_image_dynamic(
+        &input_image,
+        model_input_size,
+        state.yunet_pool.clone()
+    ).await?;
 
     // 2️⃣ Convert → tensor
     let input_tensor = mat_to_array4_dynamic(&face_mat, layout_str)?;
 
     // 3️⃣ Send to inference pool
-    state
-        .inference_pool
-        .run_emotion(input_tensor)
-        .await
+    state.emotion_pool.run_emotion(input_tensor).await
 }

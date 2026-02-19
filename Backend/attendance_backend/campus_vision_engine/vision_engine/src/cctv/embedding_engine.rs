@@ -1,8 +1,10 @@
 use crate::app::AppState;
-use ndarray::Array4;
+use crate::preprocessing::mat_to_array;
+use ndarray::{ Array4, Ix4 };
 use std::sync::Arc;
 use opencv::prelude::*;
 
+#[derive(Clone)]
 pub struct EmbeddingEngine {
     state: Arc<AppState>,
     layout: String,
@@ -20,7 +22,11 @@ impl EmbeddingEngine {
         let mut batch: Vec<Array4<f32>> = Vec::with_capacity(mats.len());
 
         for mat in mats {
-            batch.push(crate::mat_to_array4(mat, &self.layout)?);
+            use ndarray::Ix4;
+
+            let arr = mat_to_array(mat, &self.layout)?.into_dimensionality::<Ix4>()?;
+
+            batch.push(arr);
         }
 
         // 🔥 REAL batch inference
@@ -38,7 +44,11 @@ impl EmbeddingEngine {
         let mut batch = Vec::with_capacity(mats.len());
 
         for mat in mats {
-            batch.push(crate::mat_to_array4(mat, &self.layout)?);
+            use ndarray::Ix4;
+
+            let arr = mat_to_array(mat, &self.layout)?.into_dimensionality::<Ix4>()?;
+
+            batch.push(arr);
         }
 
         let emotions = self.state.emotion_pool.infer_batch(batch).await?;

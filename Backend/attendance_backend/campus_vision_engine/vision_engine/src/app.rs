@@ -25,81 +25,66 @@ pub struct AppState {
     pub face_db_backup: MinioFaceDb,
 }
 
-pub async fn new() -> Self {
-    dotenvy::dotenv().ok();
+impl AppState {
+    pub async fn new() -> Self {
+        dotenvy::dotenv().ok();
 
-    let startup = std::time::Instant::now();
+        let startup = std::time::Instant::now();
 
-    // ── Redis ─────────────────────────────
-    let redis_url =
-        std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+        // ── Redis ─────────────────────────────
+        let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
 
-    let client = Client::open(redis_url)
-        .expect("Failed to create Redis client");
+        let client = Client::open(redis_url).expect("Failed to create Redis client");
 
-    let redis = client
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Failed to connect to Redis");
+        let redis = client
+            .get_multiplexed_async_connection().await
+            .expect("Failed to connect to Redis");
 
-    // ── Django ────────────────────────────
-    let django_base_url = std::env::var("DJANGO_BASE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+        // ── Django ────────────────────────────
+        let django_base_url = std::env
+            ::var("DJANGO_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
 
-    // ── MinIO ─────────────────────────────
-    let face_db_backup =
-        MinioFaceDb::new()
-            .await
-            .expect("Failed to init MinIO");
+        // ── MinIO ─────────────────────────────
+        let face_db_backup = MinioFaceDb::new().await.expect("Failed to init MinIO");
 
-    let cpu_count = num_cpus::get();
+        let cpu_count = num_cpus::get();
 
-    let yunet_workers = if cpu_count >= 8 { 3 }
-        else if cpu_count >= 4 { 2 }
-        else { 1 };
+        let yunet_workers = if cpu_count >= 8 { 3 } else if cpu_count >= 4 { 2 } else { 1 };
 
-    let face_workers = yunet_workers;
-    let emotion_workers = 1;
+        let face_workers = yunet_workers;
+        let emotion_workers = 1;
 
-    // 🔥 Create pools
-    let yunet_pool = Arc::new(
-        YuNetPool::new(
-            "models/face_detection_yunet_2023mar.onnx",
-            yunet_workers
-        )
-    );
+        // 🔥 Create pools
+        let yunet_pool = Arc::new(
+            YuNetPool::new("models/face_detection_yunet_2023mar.onnx", yunet_workers)
+        );
 
-    let face_pool = Arc::new(
-        InferencePool::new("models/facenet.onnx", face_workers)
-    );
+        let face_pool = Arc::new(InferencePool::new("models/facenet.onnx", face_workers));
 
-    let emotion_pool = Arc::new(
-        InferencePool::new("models/emotion.onnx", emotion_workers)
-    );
+        let emotion_pool = Arc::new(InferencePool::new("models/emotion.onnx", emotion_workers));
 
-    // 🔥 Warmup
-    println!("Warming up models...");
+        // 🔥 Warmup
+        println!("Warming up models...");
 
-    let dummy = ndarray::Array4::<f32>::zeros((1, 3, 112, 112));
-    face_pool.warm_up(dummy.clone());
-    emotion_pool.warm_up(dummy);
+        let dummy = ndarray::Array4::<f32>::zeros((1, 3, 112, 112));
+        face_pool.warm_up(dummy.clone());
+        emotion_pool.warm_up(dummy);
 
-    println!(
-        "Startup completed in {:.2?}",
-        startup.elapsed()
-    );
+        println!("Startup completed in {:.2?}", startup.elapsed());
 
-    Self {
-        redis: Arc::new(Mutex::new(redis)),
-        last_embeddings: Arc::new(RwLock::new(HashMap::new())),
+        Self {
+            redis: Arc::new(Mutex::new(redis)),
+            last_embeddings: Arc::new(RwLock::new(HashMap::new())),
 
-        yunet_pool,
-        face_pool,
-        emotion_pool,
+            yunet_pool,
+            face_pool,
+            emotion_pool,
 
-        security: SecurityService::new(),
-        attendance: AttendanceService::new(),
-        django: DjangoService::new(django_base_url),
-        face_db_backup,
+            security: SecurityService::new(),
+            attendance: AttendanceService::new(),
+            django: DjangoService::new(django_base_url),
+            face_db_backup,
+        }
     }
 }

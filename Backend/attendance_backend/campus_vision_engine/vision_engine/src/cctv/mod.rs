@@ -6,3 +6,4 @@ pub mod detector;
 pub mod embedding_engine;
 pub mod identity_resolver;
 pub mod track_manager;
+pub mod types;

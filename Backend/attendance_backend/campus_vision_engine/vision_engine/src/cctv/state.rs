@@ -1,6 +1,7 @@
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use crate::cctv::types;
 
 /// Internal store of daily attendance per role
 static DAILY_MARKED: Lazy<Mutex<HashMap<String, HashSet<usize>>>> = Lazy::new(|| {
@@ -37,7 +38,7 @@ pub fn clear_daily_records() {
 /// Marks a TrackedFace ONLY if identity is stable and confident
 /// Returns true if marking happened (newly marked)
 pub fn mark_tracked_face(
-    face: &super::tracker::TrackedFace,
+    face: &types::TrackedFace,
     role: &str,
 ) -> bool {
     const MIN_CONFIDENCE: f32 = 0.85;

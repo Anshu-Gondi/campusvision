@@ -1,13 +1,10 @@
-use anyhow::{anyhow, Result};
+use anyhow::{ anyhow, Result };
 use ndarray::Array4;
 use once_cell::sync::OnceCell;
-use onnxruntime::{environment::Environment, GraphOptimizationLevel};
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    mpsc, Arc,
-};
-use std::thread;
-use std::time::{Duration, Instant};
+use onnxruntime::{ environment::Environment, GraphOptimizationLevel };
+use std::sync::{ atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering }, mpsc, Arc };
+use std::thread::{ self, JoinHandle };
+use std::time::{ Duration, Instant };
 use tokio::sync::oneshot;
 
 // ==========================
@@ -47,8 +44,7 @@ pub struct WorkerMetrics {
 impl WorkerMetrics {
     pub fn record(&self, duration: Duration) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_ns
-            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+        self.total_latency_ns.fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
     }
 
     pub fn average_latency_ms(&self) -> f64 {
@@ -57,7 +53,7 @@ impl WorkerMetrics {
             return 0.0;
         }
         let total_ns = self.total_latency_ns.load(Ordering::Relaxed);
-        (total_ns as f64 / reqs as f64) / 1_000_000.0
+        (total_ns as f64) / (reqs as f64) / 1_000_000.0
     }
 }
 
@@ -70,7 +66,8 @@ pub struct InferencePool {
     counter: AtomicUsize,
     shutdown: Arc<AtomicBool>,
     metrics: Vec<Arc<WorkerMetrics>>,
-    ready: Arc<AtomicBool>, // 🔥 NEW
+    ready: Arc<AtomicBool>,
+    _handles: Vec<JoinHandle<()>>, // keep threads alive
 }
 
 impl InferencePool {
@@ -79,27 +76,31 @@ impl InferencePool {
 
         let mut senders = Vec::with_capacity(workers);
         let mut metrics = Vec::with_capacity(workers);
+        let mut handles = Vec::with_capacity(workers);
+
         let shutdown = Arc::new(AtomicBool::new(false));
-        let ready = Arc::new(AtomicBool::new(false)); // 🔥 NEW
+        let ready = Arc::new(AtomicBool::new(false));
+        let ready_counter = Arc::new(AtomicUsize::new(0));
 
         for worker_id in 0..workers {
             let (tx, rx) = mpsc::sync_channel(50);
             let worker_metrics = Arc::new(WorkerMetrics::default());
 
-            start_worker(
+            let handle = start_worker(
                 worker_id,
                 rx,
                 model_path.to_string(),
                 shutdown.clone(),
                 worker_metrics.clone(),
+                ready.clone(),
+                ready_counter.clone(),
+                workers
             );
 
             senders.push(tx);
             metrics.push(worker_metrics);
+            handles.push(handle);
         }
-
-        // 🔥 Mark pool ready after workers spawned
-        ready.store(true, Ordering::Relaxed);
 
         Self {
             senders,
@@ -107,10 +108,38 @@ impl InferencePool {
             shutdown,
             metrics,
             ready,
+            _handles: handles,
         }
     }
 
-    // 🔥 Async inference entrypoint (BACKPRESSURE SAFE)
+    pub async fn infer_batch(&self, batch: Vec<Array4<f32>>) -> Result<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(batch.len());
+        for input in batch {
+            results.push(self.infer(input).await?);
+        }
+        Ok(results)
+    }
+
+    pub async fn run_face_embedding(&self, input: Array4<f32>) -> Result<Vec<f32>> {
+        self.infer(input).await
+    }
+
+    pub async fn run_emotion(&self, input: Array4<f32>) -> Result<i64> {
+        let output = self.infer(input).await?;
+        Ok(
+            output
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i as i64)
+                .unwrap_or(0)
+        )
+    }
+
+    pub fn get_model_input_size(&self) -> Result<(usize, usize)> {
+        Ok((112, 112)) // or your real model size
+    }
+
     pub async fn infer(&self, input: Array4<f32>) -> Result<Vec<f32>> {
         if !self.is_ready() {
             return Err(anyhow!("InferencePool not ready"));
@@ -118,10 +147,8 @@ impl InferencePool {
 
         let (tx, rx) = oneshot::channel();
 
-        let index =
-            self.counter.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.senders.len();
 
-        // ✅ BLOCKING send (correct for SaaS backpressure)
         self.senders[index]
             .send(InferenceRequest {
                 input,
@@ -132,12 +159,12 @@ impl InferencePool {
         rx.await.map_err(|_| anyhow!("Worker crashed"))?
     }
 
-    // 🔥 Warm up ALL workers
     pub fn warm_up(&self, dummy: Array4<f32>) {
         for sender in &self.senders {
+            let (tx, _rx) = oneshot::channel();
             let _ = sender.send(InferenceRequest {
                 input: dummy.clone(),
-                respond_to: oneshot::channel().0,
+                respond_to: tx,
             });
         }
     }
@@ -172,7 +199,10 @@ fn start_worker(
     model_path: String,
     shutdown: Arc<AtomicBool>,
     metrics: Arc<WorkerMetrics>,
-) {
+    ready: Arc<AtomicBool>,
+    ready_counter: Arc<AtomicUsize>,
+    total_workers: usize
+) -> JoinHandle<()> {
     thread::spawn(move || {
         #[cfg(target_os = "linux")]
         {
@@ -185,7 +215,7 @@ fn start_worker(
 
         let env = ort_env();
 
-        let session = env
+        let mut session = env
             .new_session_builder()
             .expect("Failed builder")
             .with_number_threads(1)
@@ -194,6 +224,11 @@ fn start_worker(
             .expect("Opt level failed")
             .with_model_from_file(&model_path)
             .expect("Model load failed");
+
+        // mark worker ready AFTER model loaded
+        if ready_counter.fetch_add(1, Ordering::SeqCst) + 1 == total_workers {
+            ready.store(true, Ordering::SeqCst);
+        }
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -208,7 +243,8 @@ fn start_worker(
                         .run(vec![req.input.into_dyn()])
                         .map_err(|e| anyhow!("{e}"))
                         .and_then(|outputs| {
-                            let slice = outputs[0]
+                            let output = &outputs[0];
+                            let slice = output
                                 .as_slice()
                                 .ok_or_else(|| anyhow!("Output not contiguous"))?;
                             Ok(slice.to_vec())
@@ -219,12 +255,15 @@ fn start_worker(
                     let _ = req.respond_to.send(result);
                 }
 
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
             }
         }
 
         println!("Worker {} shutting down.", worker_id);
-    });
+    })
 }

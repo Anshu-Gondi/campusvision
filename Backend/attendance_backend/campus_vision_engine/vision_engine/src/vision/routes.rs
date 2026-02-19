@@ -13,7 +13,7 @@ use intelligence_core::embeddings::add_face_embedding;
 
 use super::detect::detect_and_embed_rust;
 use super::index::{ search_person_rust, can_reenroll_rust };
-use super::recognition::{ verify_face_onnx, detect_emotion_onnx };
+use super::recognition::{ verify_face_with_pool, detect_emotion_with_pool };
 
 // ── Shared API Error ─────────────────────────────────────────────────────
 
@@ -305,16 +305,16 @@ pub async fn verify_face_handler(
         });
     }
 
-    let similarity = super::recognition
-        ::verify_face_with_pool(state.clone(), payload.image, payload.known_embedding).await
-        .map_err(|_| ApiErr {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Inference task panicked".into(),
-        })?
-        .map_err(|e| ApiErr {
-            status: StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        })?;
+    let similarity = verify_face_with_pool(
+        state.clone(),
+        payload.image,
+        payload.known_embedding,
+        None,
+        None
+    ).await.map_err(|e| ApiErr {
+        status: StatusCode::BAD_REQUEST,
+        message: e.to_string(),
+    })?;
 
     Ok(Json(VerifyFaceResponse { similarity }))
 }
@@ -333,16 +333,12 @@ pub async fn detect_emotion_handler(
         });
     }
 
-    let emotion = super::recognition
-        ::detect_emotion_with_pool(state.clone(), payload.image).await
-        .map_err(|_| ApiErr {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Inference task panicked".into(),
-        })?
-        .map_err(|e| ApiErr {
+    let emotion = detect_emotion_with_pool(state.clone(), payload.image, None, None).await.map_err(
+        |e| ApiErr {
             status: StatusCode::BAD_REQUEST,
             message: e.to_string(),
-        })?;
+        }
+    )?;
 
     Ok(Json(DetectEmotionResponse { emotion }))
 }
@@ -450,7 +446,7 @@ pub async fn inference_health(State(state): State<Arc<AppState>>) -> impl IntoRe
 
 // ── Routes ──────────────────────────────────────────────────────────────
 
-pub fn face_routes(state: Arc<AppState>) -> Router {
+pub fn face_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/face/detect-embed", post(detect_and_embed_handler))
         .route("/face/add-person", post(detect_and_add_person_handler))
@@ -463,5 +459,4 @@ pub fn face_routes(state: Arc<AppState>) -> Router {
         .route("/face/save", post(save_face_db_handler))
         .route("/face/init", post(init_face_db_handler))
         .route("/health/inference", get(inference_health))
-        .with_state(state)
 }

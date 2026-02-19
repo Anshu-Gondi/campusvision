@@ -1,24 +1,19 @@
-pub mod types;
-pub mod detector;
-pub mod embedding_engine;
-pub mod identity_resolver;
-pub mod track_manager;
-
 use std::sync::Arc;
 use std::time::Instant;
 use crate::app::AppState;
 
-use detector::Detector;
-use embedding_engine::EmbeddingEngine;
-use identity_resolver::IdentityResolver;
-use track_manager::TrackManager;
-use types::TrackedFace;
+use crate::cctv::detector::Detector;
+use crate::cctv::embedding_engine::EmbeddingEngine;
+use crate::cctv::identity_resolver::IdentityResolver;
+use crate::cctv::track_manager::TrackManager;
+use crate::cctv::types::TrackedFace;
 
+#[derive(Clone)]
 pub struct FaceTracker {
     detector: Detector,
     embedder: EmbeddingEngine,
     resolver: IdentityResolver,
-    manager: TrackManager,
+    pub manager: TrackManager,
 }
 
 impl FaceTracker {
@@ -105,6 +100,6 @@ impl FaceTracker {
         // 6 Cleanup dead tracks
         self.manager.cleanup();
 
-        Ok(self.manager.tracks.values().cloned().collect());
+        Ok(self.manager.tracks.values().cloned().collect())
     }
 }

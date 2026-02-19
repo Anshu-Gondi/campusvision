@@ -108,8 +108,7 @@ pub async fn schedule_classes_handler(
 // ────────────────────────────────
 //
 
-pub fn scheduler_routes(state: Arc<AppState>) -> Router {
+pub fn scheduler_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/schedule/classes", post(schedule_classes_handler))
-        .with_state(state)
 }

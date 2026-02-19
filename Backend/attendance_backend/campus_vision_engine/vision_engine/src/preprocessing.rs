@@ -1,187 +1,204 @@
-use crate::preprocessing;
-use crate::app::AppState;
+use anyhow::{ anyhow, Result };
+use opencv::{
+    core::{ self, Mat, Point2f, Rect, Scalar, Size, Vector, AlgorithmHint },
+    imgcodecs,
+    imgproc,
+    calib3d::{ estimate_affine_partial_2d, RANSAC },
+    prelude::*,
+};
+use std::sync::Arc;
 
-use intelligence_core::embeddings;
-use intelligence_core::utils::cosine_similarity;
+use crate::models::yunet_pool::YuNetPool;
 
-use opencv::prelude::*;
-use anyhow::{anyhow, Result};
-use std::sync::{Arc, Mutex};
-use once_cell::sync::Lazy;
-use ndarray::Array4;
+pub const DEFAULT_YUNET_MODEL_PATH: &str = "models/face_detection_yunet_2023mar.onnx";
 
-#[derive(Debug)]
-pub struct DetectionResult {
-    pub found: bool,
-    pub bbox: Option<(i32, i32, i32, i32)>,
-    pub embedding: Option<Vec<f32>>,
-}
+/// Preprocess image bytes → returns (aligned_face_mat, bbox, landmarks)
+pub async fn preprocess_image_dynamic(
+    image_bytes: &[u8],
+    model_input_size: Option<(usize, usize)>,
+    yunet_pool: Arc<YuNetPool>
+) -> Result<(Mat, Rect, Vec<Point2f>)> {
+    // 1️⃣ Decode image
+    let mut mat = imgcodecs::imdecode(&Vector::from_slice(image_bytes), imgcodecs::IMREAD_COLOR)?;
 
-static LAST_EMBEDDING: Lazy<Mutex<Option<Vec<f32>>>> =
-    Lazy::new(|| Mutex::new(None));
-
-/* ============================================================
-   INTERNAL ASYNC IMPLEMENTATION (POOL-BASED)
-   ============================================================ */
-
-async fn detect_and_embed_internal(
-    state: Arc<AppState>,
-    image_bytes: Vec<u8>,
-    layout: Option<String>,
-    enrollment: bool,
-) -> Result<DetectionResult> {
-
-    // 1️⃣ Get model input size
-    let (model_h, model_w) =
-        state.face_pool.get_model_input_size()?; // if you exposed it
-        // OR hardcode if fixed: (160, 160)
-
-    // 2️⃣ Preprocess image
-    let (face_mat, rect, _landmarks) =
-        match preprocessing::preprocess_image_dynamic(
-            &image_bytes,
-            Some((model_h, model_w)),
-        ) {
-            Ok(res) => res,
-            Err(_) => {
-                return Ok(DetectionResult {
-                    found: false,
-                    bbox: None,
-                    embedding: None,
-                });
-            }
-        };
-
-    // 3️⃣ Face area sanity check
-    let img_area = face_mat.rows() * face_mat.cols();
-    let face_area = face_mat.rows() * face_mat.cols();
-
-    if face_area < img_area / 20 {
-        return Ok(DetectionResult {
-            found: false,
-            bbox: None,
-            embedding: None,
-        });
+    if mat.empty() {
+        return Err(anyhow!("Decoded image is empty"));
     }
 
-    // 4️⃣ Blur check
-    {
-        use opencv::{core::{mean_std_dev, AlgorithmHint}, imgproc};
+    // 2️⃣ Resize large images
+    let max_side = 640;
+    let (w, h) = (mat.cols(), mat.rows());
 
-        let mut gray = opencv::core::Mat::default();
-        imgproc::cvt_color(
-            &face_mat,
-            &mut gray,
-            imgproc::COLOR_RGB2GRAY,
-            0,
-            AlgorithmHint::ALGO_HINT_DEFAULT,
-        )?;
+    if w > max_side || h > max_side {
+        let scale = (max_side as f64) / (w.max(h) as f64);
 
-        let mut lap = opencv::core::Mat::default();
-        imgproc::laplacian(
-            &gray,
-            &mut lap,
-            opencv::core::CV_64F,
-            1,
-            1.0,
-            0.0,
-            opencv::core::BORDER_DEFAULT,
-        )?;
+        let new_size = Size::new(((w as f64) * scale) as i32, ((h as f64) * scale) as i32);
 
-        let mut mean = opencv::core::Scalar::default();
-        let mut stddev = opencv::core::Scalar::default();
-        mean_std_dev(&lap, &mut mean, &mut stddev, &opencv::core::no_array())?;
+        let mut resized = Mat::default();
+        imgproc::resize(&mat, &mut resized, new_size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
 
-        if stddev[0] * stddev[0] < 30.0 {
-            return Ok(DetectionResult {
-                found: false,
-                bbox: None,
-                embedding: None,
-            });
-        }
+        mat = resized;
     }
 
-    // 5️⃣ Convert Mat → ndarray
-    let input_layout = layout.unwrap_or_else(|| "NCHW".to_string());
-    let input_array = preprocessing::mat_to_array(&face_mat, &input_layout)?;
-    let input_array4: Array4<f32> = input_array
-        .into_dimensionality()
-        .map_err(|_| anyhow!("Expected 4D tensor"))?;
+    // 3️⃣ Detect faces via pool
+    let faces = yunet_pool.detect(mat.clone()).await?;
 
-    // 🔥 6️⃣ INFERENCE THROUGH POOL (NON-BLOCKING)
-    let embedding = state.face_pool.infer(input_array4).await?;
-
-    // 7️⃣ Replay protection
-    if !enrollment {
-        let mut last = LAST_EMBEDDING.lock().unwrap();
-        if let Some(prev) = &*last {
-            if cosine_similarity(prev, &embedding) >= 0.995 {
-                return Ok(DetectionResult {
-                    found: false,
-                    bbox: None,
-                    embedding: None,
-                });
-            }
-        }
-        *last = Some(embedding.clone());
-    }
-
-    Ok(DetectionResult {
-        found: true,
-        bbox: Some((rect.x, rect.y, rect.width, rect.height)),
-        embedding: Some(embedding),
-    })
-}
-
-/* ============================================================
-   PUBLIC API
-   ============================================================ */
-
-pub async fn detect_and_embed_rust(
-    state: Arc<AppState>,
-    image_bytes: Vec<u8>,
-    layout: Option<String>,
-    enrollment: bool,
-) -> Result<DetectionResult> {
-    detect_and_embed_internal(
-        state,
-        image_bytes,
-        layout,
-        enrollment,
-    ).await
-}
-
-pub async fn detect_and_add_person_rust(
-    state: Arc<AppState>,
-    image_bytes: Vec<u8>,
-    name: String,
-    person_id: u64,
-    roll_no: String,
-    role: String,
-    layout: Option<String>,
-) -> Result<usize> {
-
-    if !["student", "teacher"].contains(&role.as_str()) {
-        anyhow::bail!("role must be 'student' or 'teacher'");
-    }
-
-    let result = detect_and_embed_rust(
-        state,
-        image_bytes,
-        layout,
-        true,
-    ).await?;
-
-    let embedding =
-        result.embedding.ok_or_else(|| anyhow!("Embedding missing"))?;
-
-    let id = embeddings::add_face_embedding(
-        embedding,
-        name,
-        person_id,
-        roll_no,
-        role,
+    let (face_rect, landmarks) = pick_best_face(&faces)?.ok_or_else(||
+        anyhow!("No face detected")
     )?;
 
-    Ok(id)
+    // 4️⃣ Align face
+    let aligned = align_face(
+        &mat,
+        face_rect,
+        &landmarks,
+        model_input_size.map(|(h, w)| (w as i32, h as i32))
+    )?;
+
+    Ok((aligned, face_rect, landmarks))
+}
+
+/// Select highest score face
+pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {
+    if faces.empty() || faces.rows() == 0 {
+        return Ok(None);
+    }
+
+    let mut best_idx = -1;
+    let mut best_score = -1.0_f32;
+
+    for row in 0..faces.rows() {
+        let score = *faces.at_2d::<f32>(row, 14)?;
+        if score > best_score {
+            best_score = score;
+            best_idx = row;
+        }
+    }
+
+    if best_idx < 0 {
+        return Ok(None);
+    }
+
+    let x = *faces.at_2d::<f32>(best_idx, 0)? as i32;
+    let y = *faces.at_2d::<f32>(best_idx, 1)? as i32;
+    let w = *faces.at_2d::<f32>(best_idx, 2)? as i32;
+    let h = *faces.at_2d::<f32>(best_idx, 3)? as i32;
+
+    let bbox = Rect::new(x, y, w, h);
+
+    let mut landmarks = Vec::with_capacity(5);
+    for &col in &[4, 6, 8, 10, 12] {
+        let px = *faces.at_2d::<f32>(best_idx, col)?;
+        let py = *faces.at_2d::<f32>(best_idx, col + 1)?;
+        landmarks.push(Point2f::new(px, py));
+    }
+
+    Ok(Some((bbox, landmarks)))
+}
+
+/// Align face using 2-eye affine transform
+pub fn align_face(
+    mat: &Mat,
+    mut face_rect: Rect,
+    landmarks: &[Point2f],
+    target_size: Option<(i32, i32)>
+) -> Result<Mat> {
+    if landmarks.len() < 2 {
+        return Err(anyhow!("Not enough landmarks"));
+    }
+
+    let img_w = mat.cols();
+    let img_h = mat.rows();
+
+    face_rect.x = face_rect.x.clamp(0, img_w - 1);
+    face_rect.y = face_rect.y.clamp(0, img_h - 1);
+    face_rect.width = face_rect.width.min(img_w - face_rect.x);
+    face_rect.height = face_rect.height.min(img_h - face_rect.y);
+
+    if face_rect.width <= 0 || face_rect.height <= 0 {
+        return Err(anyhow!("Invalid face rect"));
+    }
+
+    let face_roi = Mat::roi(mat, face_rect)?;
+
+    let (out_w, out_h) = target_size.unwrap_or((face_rect.width, face_rect.height));
+
+    // Canonical eye placement
+    let desired_left_eye = Point2f::new((out_w as f32) * 0.35, (out_h as f32) * 0.4);
+    let desired_right_eye = Point2f::new((out_w as f32) * 0.65, (out_h as f32) * 0.4);
+
+    let left_eye = Point2f::new(
+        landmarks[1].x - (face_rect.x as f32),
+        landmarks[1].y - (face_rect.y as f32)
+    );
+
+    let right_eye = Point2f::new(
+        landmarks[0].x - (face_rect.x as f32),
+        landmarks[0].y - (face_rect.y as f32)
+    );
+
+    let src = Vector::from_slice(&[left_eye, right_eye]);
+    let dst = Vector::from_slice(&[desired_left_eye, desired_right_eye]);
+
+    let warp_mat = estimate_affine_partial_2d(
+        &src,
+        &dst,
+        &mut core::no_array(),
+        RANSAC,
+        3.0,
+        2000,
+        0.99,
+        10
+    )?;
+
+    if warp_mat.empty() {
+        return Err(anyhow!("Affine transform failed"));
+    }
+
+    let mut aligned = Mat::default();
+
+    imgproc::warp_affine(
+        &face_roi,
+        &mut aligned,
+        &warp_mat,
+        Size::new(out_w, out_h),
+        imgproc::INTER_LINEAR,
+        core::BORDER_CONSTANT,
+        Scalar::all(0.0)
+    )?;
+
+    // Convert BGR → RGB
+    let mut rgb = Mat::default();
+    imgproc::cvt_color(
+        &aligned,
+        &mut rgb,
+        imgproc::COLOR_BGR2RGB,
+        0,
+        AlgorithmHint::ALGO_HINT_DEFAULT
+    )?;
+
+    Ok(rgb)
+}
+
+/// Convert Mat → ndarray (NHWC or NCHW)
+pub fn mat_to_array(mat: &Mat, layout: &str) -> Result<ndarray::ArrayD<f32>> {
+    let rows = mat.rows() as usize;
+    let cols = mat.cols() as usize;
+    let data = mat.data_bytes()?;
+
+    match layout {
+        "NHWC" => {
+            let arr = ndarray::Array::from_shape_fn((1, rows, cols, 3), |(_, y, x, c)| {
+                (data[(y * cols + x) * 3 + c] as f32) / 255.0
+            });
+            Ok(arr.into_dyn())
+        }
+        "NCHW" => {
+            let arr = ndarray::Array::from_shape_fn((1, 3, rows, cols), |(_, c, y, x)| {
+                (data[(y * cols + x) * 3 + c] as f32) / 255.0
+            });
+            Ok(arr.into_dyn())
+        }
+        _ => Err(anyhow!("Unsupported layout")),
+    }
 }
