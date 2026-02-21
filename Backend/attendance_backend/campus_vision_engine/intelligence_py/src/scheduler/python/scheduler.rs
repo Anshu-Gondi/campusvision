@@ -38,10 +38,10 @@ fn parse_classes(py: Python, py_classes: Vec<PyObject>) -> PyResult<Vec<PyClassI
 }
 
 #[pyfunction]
-pub fn schedule_classes(py: Python, py_classes: Vec<PyObject>) -> PyResult<PyObject> {
+pub fn schedule_classes(py: Python, py_classes: Vec<PyObject>, school_id: String) -> PyResult<PyObject> {
     let inputs = parse_classes(py, py_classes)?;
 
-    let results = py.allow_threads(|| schedule_classes_rust(inputs));
+    let results = py.allow_threads(|| schedule_classes_rust(inputs, school_id.clone()));
 
     let py_list = pyo3::types::PyList::empty(py);
     for r in results {
@@ -61,10 +61,10 @@ pub fn schedule_classes(py: Python, py_classes: Vec<PyObject>) -> PyResult<PyObj
 }
 
 #[pyfunction]
-pub fn schedule_classes_beam(py: Python, py_classes: Vec<PyObject>) -> PyResult<PyObject> {
+pub fn schedule_classes_beam(py: Python, py_classes: Vec<PyObject>, school_id: String) -> PyResult<PyObject> {
     let inputs = parse_classes(py, py_classes)?;
 
-    let results = py.allow_threads(|| schedule_classes_beam_rust(inputs));
+    let results = py.allow_threads(|| schedule_classes_beam_rust(inputs, school_id.clone()));
 
     let py_list = pyo3::types::PyList::empty(py);
     for r in results {

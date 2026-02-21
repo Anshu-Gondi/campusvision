@@ -95,13 +95,15 @@ pub struct CandidateCache {
     // subject -> ranked list of (teacher_id, similarity)
     pub map: HashMap<String, Vec<(usize, f32)>>,
     pub dim: usize,
+    pub school_id: String,
 }
 
 impl CandidateCache {
-    pub fn new(dim: usize) -> Self {
+    pub fn new(dim: usize, school_id: String) -> Self {
         Self {
             map: HashMap::new(),
             dim,
+            school_id,
         }
     }
 
@@ -112,7 +114,7 @@ impl CandidateCache {
         }
 
         let embedding = hash_to_embedding(subject, self.dim);
-        let hits = search_in_role(&embedding, "teacher", k);
+        let hits = search_in_role(&self.school_id, &embedding, "teacher", k);
         // store and return
         if self.map.len() >= MAX_SUBJECT_CACHE {
             // simple eviction: remove a random key (not LRU, but simple)
@@ -143,7 +145,7 @@ impl CandidateCache {
 
         for (teacher_id, sim) in ranked.into_iter() {
             // get metadata
-            if let Some(meta) = get_metadata(teacher_id) {
+            if let Some(meta) = get_metadata(&self.school_id, teacher_id) {
                 // check timetable conflict against provided timetable_map
                 if let Some(slots) = timetable_map.get(&teacher_id) {
                     let mut conflict = false;
@@ -191,17 +193,20 @@ pub struct FullScheduler {
     pub teacher_workload: HashMap<usize, usize>,
     pub teacher_timetable: HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
     // small cache embedded in scheduler instance
+    pub school_id: String,
     pub cache: CandidateCache,
     start_time: Instant,
     expansions: usize,
 }
 
 impl FullScheduler {
-    pub fn new(embedding_dim: usize) -> Self {
+    pub fn new(embedding_dim: usize, school_id: String) -> Self {
+        let cache = CandidateCache::new(embedding_dim, school_id.clone());
         Self {
             teacher_workload: HashMap::new(),
             teacher_timetable: HashMap::new(),
-            cache: CandidateCache::new(embedding_dim),
+            cache,
+            school_id,
             start_time: Instant::now(),
             expansions: 0,
         }
@@ -349,6 +354,7 @@ pub struct GraphScheduler {
     pub teacher_workload: HashMap<usize, usize>,
     pub teacher_timetable: HashMap<usize, Vec<(NaiveTime, NaiveTime)>>,
     pub cache: CandidateCache,
+    pub school_id: String,
     pub beam_width: usize,
     pub fairness_penalty: f32,
 }
@@ -368,11 +374,13 @@ struct AssignmentIdx {
 }
 
 impl GraphScheduler {
-    pub fn new(embedding_dim: usize, beam_width: usize, fairness_penalty: f32) -> Self {
+    pub fn new(embedding_dim: usize, beam_width: usize, fairness_penalty: f32, school_id: String) -> Self {
+        let cache = CandidateCache::new(embedding_dim, school_id.clone());
         Self {
             teacher_workload: HashMap::new(),
             teacher_timetable: HashMap::new(),
-            cache: CandidateCache::new(embedding_dim),
+            cache,
+            school_id,
             beam_width,
             fairness_penalty,
         }
@@ -461,7 +469,7 @@ impl GraphScheduler {
             .assignments
             .iter()
             .filter_map(|a| {
-                let meta = get_metadata(a.teacher_id)?;
+                let meta = get_metadata(&self.school_id, a.teacher_id)?;
                 Some(Assignment {
                     class: classes[a.class_idx].clone(), // one-time clone
                     teacher: TeacherCandidate {

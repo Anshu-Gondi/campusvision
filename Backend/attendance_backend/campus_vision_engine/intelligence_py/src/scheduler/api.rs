@@ -29,6 +29,7 @@ pub struct ScheduledClassResult {
 /// Normal scheduler
 pub fn schedule_classes_rust(
     inputs: Vec<PyClassInput>,
+    school_id: String,
 ) -> Vec<ScheduledClassResult> {
     let classes: Vec<ClassRequest> = inputs
         .into_iter()
@@ -42,7 +43,7 @@ pub fn schedule_classes_rust(
         .collect();
 
     let embedding_dim = 32;
-    let mut scheduler = FullScheduler::new(embedding_dim);
+    let mut scheduler = FullScheduler::new(embedding_dim, school_id.clone());
 
     scheduler
         .assign_classes(&classes)
@@ -63,6 +64,7 @@ pub fn schedule_classes_rust(
 /// Beam-search scheduler
 pub fn schedule_classes_beam_rust(
     inputs: Vec<PyClassInput>,
+    school_id: String,
 ) -> Vec<ScheduledClassResult> {
     let classes: Vec<ClassRequest> = inputs
         .into_iter()
@@ -81,6 +83,7 @@ pub fn schedule_classes_beam_rust(
         embedding_dim,
         60,    // beam width
         0.02,  // similarity threshold
+        school_id.clone(),
     );
 
     scheduler
