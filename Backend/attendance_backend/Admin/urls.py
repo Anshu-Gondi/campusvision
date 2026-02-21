@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import views, timetable_views, schedule_views
 
 urlpatterns = [
     # ====================== ADMIN AUTHENTICATION ======================
@@ -20,11 +20,26 @@ urlpatterns = [
     path("teachers/", views.teachers_view),
     path("teachers/<int:teacher_id>/", views.teacher_detail_view),
     path("teachers/<int:teacher_id>/image/", views.admin_upload_teacher_image),
-    path("teachers/<int:teacher_id>/image/delete/", views.admin_delete_teacher_image),
+    path("teachers/<int:teacher_id>/image/delete/",
+         views.admin_delete_teacher_image),
 
     # ================ STUDENTS =================
     path("students/", views.students_view),
     path("students/<int:student_id>/", views.student_detail_view),
     path("students/<int:student_id>/image/", views.admin_upload_student_image),
-    path("students/<int:student_id>/image/delete/", views.admin_delete_student_image),
+    path("students/<int:student_id>/image/delete/",
+         views.admin_delete_student_image),
+
+    # ================= TIMETABLE =================
+    path("timetable/", timetable_views.list_timetable),
+    path("timetable/upload/", timetable_views.upload_timetable_smart),
+    path("timetable/download-sample-time-table",
+         timetable_views.download_sample_timetable),
+    path("timetable/<int:timetable_id>/update/",
+         timetable_views.update_timetable_entry),
+    path("timetable/<int:timetable_id>/delete/",
+         timetable_views.delete_timetable_entry),
+
+    # ================= SCHEDULE & SUBSTITUTIONS =================
+    path("scheduler/substitution/", schedule_views.generate_substitution),
 ]

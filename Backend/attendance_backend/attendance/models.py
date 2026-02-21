@@ -1,3 +1,4 @@
+from django.db import migrations
 import os
 import uuid
 from django.db import models
@@ -71,10 +72,13 @@ class Student(models.Model):
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=100)
-    roll_no = models.CharField(max_length=20, unique=True)
+    roll_no = models.CharField(max_length=20)
     class_name = models.CharField(max_length=50)
     section = models.CharField(max_length=10)
     image = models.ImageField(upload_to="students/", null=True, blank=True)
+
+    class Meta:
+        unique_together = ("branch", "roll_no")
 
     def __str__(self):
         return f"{self.name} ({self.roll_no})"
@@ -82,14 +86,13 @@ class Student(models.Model):
 
 # ----------------- Teacher -----------------
 class Teacher(models.Model):
-    organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True
     )
 
     name = models.CharField(max_length=100)
-    employee_id = models.CharField(max_length=20, unique=True)
+    employee_id = models.CharField(max_length=20)
 
     email = models.EmailField(null=True, blank=True)
     phone = models.CharField(max_length=20, blank=True)
@@ -106,6 +109,9 @@ class Teacher(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        unique_together = ("branch", "employee_id")
+
     def __str__(self):
         return f"{self.name} ({self.employee_id})"
 
@@ -118,47 +124,54 @@ class SchoolClass(models.Model):
         max_length=50, null=True, blank=True)   # "10"
     section = models.CharField(max_length=10, null=True, blank=True)      # "A"
 
-    def __str__(self):
-        return f"{self.class_name}-{self.section}"
-
-# ----------------- Student Timetable -----------------
-
-
-class StudentTimeTable(models.Model):
-    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
-    school_class = models.ForeignKey(
-        SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
-    subject = models.CharField(max_length=100)
-    day_of_week = models.CharField(
-        max_length=10,
-        choices=[("Monday", "Monday"), ("Tuesday", "Tuesday"), ("Wednesday", "Wednesday"),
-                 ("Thursday", "Thursday"), ("Friday", "Friday"), ("Saturday", "Saturday"), ("Sunday", "Sunday")]
-    )
-    start_time = models.TimeField()
-    end_time = models.TimeField()
+    class Meta:
+        unique_together = ("branch", "class_name", "section")
 
     def __str__(self):
-        return f"{self.school_class} | {self.subject} | {self.day_of_week} {self.start_time}-{self.end_time}"
+        return f"{self.branch.name} | {self.class_name}-{self.section}"
 
+# ----------------- Unified Timetable -----------------
 
-# ----------------- Teacher Timetable -----------------
-
-class TeacherTimeTable(models.Model):
+class Timetable(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE)
     teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE)
+
     subject = models.CharField(max_length=100)
-    school_class = models.ForeignKey(
-        SchoolClass, on_delete=models.CASCADE, null=True, blank=True)
+
     day_of_week = models.CharField(
         max_length=10,
-        choices=[("Monday", "Monday"), ("Tuesday", "Tuesday"), ("Wednesday", "Wednesday"),
-                 ("Thursday", "Thursday"), ("Friday", "Friday"), ("Saturday", "Saturday"), ("Sunday", "Sunday")]
+        choices=[
+            ("Monday", "Monday"), ("Tuesday", "Tuesday"),
+            ("Wednesday", "Wednesday"), ("Thursday", "Thursday"),
+            ("Friday", "Friday"), ("Saturday", "Saturday"),
+            ("Sunday", "Sunday")
+        ]
     )
+
     start_time = models.TimeField()
     end_time = models.TimeField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = (
+            "branch",
+            "school_class",
+            "teacher",
+            "day_of_week",
+            "start_time",
+            "end_time",
+        )
+        indexes = [
+            models.Index(fields=["teacher", "day_of_week"]),
+            models.Index(fields=["school_class", "day_of_week"]),
+            models.Index(fields=["branch", "day_of_week"]),
+        ]
 
     def __str__(self):
         return f"{self.teacher.name} | {self.school_class} | {self.subject} | {self.day_of_week} {self.start_time}-{self.end_time}"
+
 
 # ----------------- Attendance -----------------
 
@@ -169,19 +182,30 @@ class Attendance(models.Model):
         Student, on_delete=models.CASCADE, null=True, blank=True)
     teacher = models.ForeignKey(
         Teacher, on_delete=models.CASCADE, null=True, blank=True)
-    student_timetable = models.ForeignKey(
-        StudentTimeTable, on_delete=models.SET_NULL, null=True, blank=True)
-    teacher_timetable = models.ForeignKey(
-        TeacherTimeTable, on_delete=models.SET_NULL, null=True, blank=True)
+    timetable = models.ForeignKey(
+        Timetable,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
     date = models.DateField(default=datetime.now)
     time = models.TimeField(default=datetime.now)
     status = models.CharField(max_length=10, choices=[
                               ("Present", "Present"), ("Absent", "Absent")])
 
     def clean(self):
-        if not self.student and not self.teacher:
+        if bool(self.student) == bool(self.teacher):
             raise ValidationError(
-                "Attendance must be linked to either a student or a teacher.")
+                "Attendance must be linked to either a student OR a teacher, not both."
+            )
+
+    class Meta:
+        unique_together = (
+            "branch",
+            "student",
+            "teacher",
+            "date",
+        )
 
     def __str__(self):
         if self.student:
@@ -193,6 +217,8 @@ class Attendance(models.Model):
 
 # ----------------- QR CODE SESSION -----------------
 class QRSession(models.Model):
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, null=True, blank=True)
     code = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True)
@@ -229,6 +255,8 @@ class Camera(models.Model):
 
 
 class CameraMatch(models.Model):
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, null=True, blank=True)
     person_id = models.CharField(max_length=100)  # roll_no or employee_id
     camera = models.ForeignKey(Camera, on_delete=models.CASCADE)
     timestamp = models.DateTimeField(auto_now_add=True)
@@ -236,6 +264,9 @@ class CameraMatch(models.Model):
 
 
 class FaceImage(models.Model):
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, null=True, blank=True)
+
     PERSON_TYPE_CHOICES = [
         ("student", "Student"),
         ("teacher", "Teacher"),
@@ -293,9 +324,11 @@ class FaceImage(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["person_type", "person_id"]),
+            models.Index(fields=["branch", "person_type", "person_id"]),
             models.Index(fields=["created_at"]),
         ]
+        unique_together = ("branch", "person_type",
+                           "person_id", "embedding_id")
         ordering = ["-created_at"]
 
     def __str__(self):
@@ -303,6 +336,9 @@ class FaceImage(models.Model):
 
 
 class FaceRejectionLog(models.Model):
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, null=True, blank=True)
+
     ROLE_CHOICES = [
         ("student", "Student"),
         ("teacher", "Teacher"),
@@ -326,6 +362,66 @@ class FaceRejectionLog(models.Model):
 
     def __str__(self):
         return f"{self.role} | {self.reason} | {self.created_at}"
+
+
+def backfill_branch(apps, schema_editor):
+    FaceImage = apps.get_model('your_app', 'FaceImage')
+    CameraMatch = apps.get_model('your_app', 'CameraMatch')
+    FaceRejectionLog = apps.get_model('your_app', 'FaceRejectionLog')
+    QRSession = apps.get_model('your_app', 'QRSession')
+    Student = apps.get_model('your_app', 'Student')
+    Teacher = apps.get_model('your_app', 'Teacher')
+    Branch = apps.get_model('your_app', 'Branch')
+
+    default_branch = Branch.objects.first()  # fallback
+
+    # ---------- FaceImage ----------
+    for img in FaceImage.objects.filter(branch__isnull=True):
+        branch = None
+        if img.person_type == 'student':
+            student = Student.objects.filter(roll_no=img.person_id).first()
+            branch = student.branch if student else default_branch
+        elif img.person_type == 'teacher':
+            teacher = Teacher.objects.filter(employee_id=img.person_id).first()
+            branch = teacher.branch if teacher else default_branch
+        img.branch = branch
+        img.save(update_fields=['branch'])
+
+    # ---------- CameraMatch ----------
+    for cam in CameraMatch.objects.filter(branch__isnull=True):
+        student = Student.objects.filter(roll_no=cam.person_id).first()
+        teacher = Teacher.objects.filter(employee_id=cam.person_id).first()
+        cam.branch = student.branch if student else (
+            teacher.branch if teacher else default_branch)
+        cam.save(update_fields=['branch'])
+
+    # ---------- FaceRejectionLog ----------
+    for log in FaceRejectionLog.objects.filter(branch__isnull=True):
+        student = Student.objects.filter(roll_no=log.person_id).first()
+        teacher = Teacher.objects.filter(employee_id=log.person_id).first()
+        log.branch = student.branch if student else (
+            teacher.branch if teacher else default_branch)
+        log.save(update_fields=['branch'])
+
+    # ---------- QRSession ----------
+    for qr in QRSession.objects.filter(branch__isnull=True):
+        # try scanned_by first
+        student = Student.objects.filter(roll_no=qr.scanned_by).first()
+        teacher = Teacher.objects.filter(employee_id=qr.scanned_by).first()
+        qr.branch = student.branch if student else (
+            teacher.branch if teacher else default_branch)
+        qr.save(update_fields=['branch'])
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ('your_app', 'previous_migration_name'),
+    ]
+
+    operations = [
+        migrations.RunPython(backfill_branch),
+    ]
+
 
 # Delete old image file on update
 

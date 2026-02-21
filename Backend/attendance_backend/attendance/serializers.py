@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Student, StudentTimeTable, Teacher, Attendance, QRSession, TeacherTimeTable
+from .models import Student, Teacher, Attendance, QRSession
 
 # ----------------- Student Serializer -----------------
 
@@ -51,23 +51,6 @@ class TeacherSerializer(serializers.ModelSerializer):
 class AttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
-        fields = "__all__"
-
-# ----------------- Student Timetable Serializer -----------------
-
-
-class StudentTimeTableSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = StudentTimeTable
-        fields = "__all__"
-
-
-# ----------------- Teacher Timetable Serializer -----------------
-class TeacherTimeTableSerializer(serializers.ModelSerializer):
-    teacher_name = serializers.CharField(source="teacher.name", read_only=True)
-
-    class Meta:
-        model = TeacherTimeTable
         fields = "__all__"
 
 # ----------------- QR Code Serializer -----------------

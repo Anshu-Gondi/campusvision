@@ -3,7 +3,6 @@ from queue import Queue
 import threading
 from django.http import StreamingHttpResponse
 from django.conf import settings
-from .models import CameraMatch, QRSession, Attendance, Student, StudentTimeTable, Teacher, TeacherTimeTable
 from rest_framework.decorators import api_view, permission_classes
 from django.shortcuts import get_object_or_404
 from concurrent.futures import ThreadPoolExecutor
@@ -18,8 +17,8 @@ from rest_framework.response import Response
 from rest_framework import status, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.timezone import now
-from .models import Student, Teacher, Attendance, QRSession, StudentTimeTable, TeacherTimeTable, Camera
-from .serializers import StudentSerializer, StudentTimeTableSerializer, TeacherSerializer, AttendanceSerializer, QRSessionSerializer, TeacherTimeTableSerializer
+from .models import Student, Teacher, Attendance, QRSession, Camera
+from .serializers import StudentSerializer ,TeacherSerializer, AttendanceSerializer, QRSessionSerializer
 
 # ----------------- CRUD ViewSets -----------------
 
@@ -39,21 +38,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     serializer_class = AttendanceSerializer
 
 
-# ----------------- Timetable APIs -----------------
-@api_view(["GET"])
-def student_timetable(request, class_name, section):
-    timetable = StudentTimeTable.objects.filter(
-        class_name=class_name, section=section)
-    serializer = StudentTimeTableSerializer(timetable, many=True)
-    return Response(serializer.data)
-
-
-@api_view(["GET"])
-def teacher_timetable(request, teacher_id):
-    timetable = TeacherTimeTable.objects.filter(
-        teacher__employee_id=teacher_id)
-    serializer = TeacherTimeTableSerializer(timetable, many=True)
-    return Response(serializer.data)
 
 
 # ----------------- Student APIs -----------------
