@@ -12,6 +12,11 @@ body {
   box-shadow: 0 0 15px rgba(0, 255, 0, 0.6), 0 0 25px rgba(255, 255, 0, 0.3);
 }
 
+.navbar-burger {
+  background: transparent;
+  border: none;
+}
+
 /* Navbar links */
 .navbar-item {
   color: #faffb8 !important;
@@ -51,4 +56,122 @@ body {
   background-color: #ffeb3b;
   color: #0a3d0a;
   box-shadow: 0 0 15px #ffff33;
+}
+
+/* ===== ADMIN LAYOUT ===== */
+.admin-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ===== SIDEBAR CLEAN READABLE VERSION ===== */
+
+.admin-sidebar {
+  width: 250px;
+  background: #071f07; /* darker for contrast */
+  color: #ffffff;
+  padding: 25px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border-right: 2px solid #00ff00;
+  box-shadow: 0 0 15px rgba(0, 255, 0, 0.4);
+  transition: transform 0.3s ease;
+}
+
+.sidebar-header h2 {
+  color: #00ff88;
+  font-weight: 700;
+  margin-bottom: 2rem;
+}
+
+/* Base link */
+.sidebar-link {
+  display: block;
+  padding: 12px 14px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  color: #eaffea;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+/* Hover */
+.sidebar-link:hover {
+  background: rgba(0, 255, 0, 0.15);
+  color: #ffffff;
+}
+
+/* Active */
+.sidebar-link.active {
+  background: rgba(0, 255, 0, 0.25);
+  color: #ffffff;
+  border-left: 4px solid #00ff00;
+}
+
+/* Sidebar footer */
+.sidebar-footer {
+  margin-top: 2rem;
+}
+
+/* ===== CONTENT AREA ===== */
+/* ===== CONTENT AREA (Improved Visibility) ===== */
+.admin-content {
+  flex: 1;
+  padding: 40px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  border-left: 2px solid rgba(0, 255, 0, 0.4);
+  min-height: 100vh;
+}
+
+/* ===== MOBILE ===== */
+/* ===== MOBILE IMPROVEMENTS ===== */
+@media screen and (max-width: 1023px) {
+
+  .admin-layout {
+    flex-direction: column;
+  }
+
+  /* Sidebar */
+  .admin-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 85%;
+    max-width: 280px;
+    height: 100vh;
+    transform: translateX(-100%);
+    overflow-y: auto;
+    z-index: 2000;
+    padding-top: 60px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-sidebar.is-active {
+    transform: translateX(0);
+  }
+
+  /* Overlay when sidebar opens */
+  .admin-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 1500;
+  }
+
+  /* Toggle button */
+  .sidebar-toggle {
+    position: fixed;
+    top: 15px;
+    left: 15px;
+    z-index: 2500;
+    box-shadow: 0 0 15px #00ff00;
+  }
+
+  /* Content adjustment */
+  .admin-content {
+    padding: 80px 20px 30px 20px;
+  }
 }

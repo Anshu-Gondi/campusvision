@@ -180,7 +180,6 @@ def upload_timetable_smart(request):
 
         results.append(row_result)
 
-
     # ---------------- PREVIEW MODE ----------------
     if preview_mode:
         return JsonResponse({
@@ -336,13 +335,14 @@ def download_sample_timetable(request):
         df_teacher.to_excel(writer, index=False,
                             sheet_name='Teacher_Timetable')
         df_legend.to_excel(writer, index=False, sheet_name='Legend')
-        writer.save()
     buffer.seek(0)
 
     response = HttpResponse(
-        buffer,
+        buffer.getvalue(),
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
+
+
     response['Content-Disposition'] = 'attachment; filename=sample_timetable.xlsx'
     return response
 
@@ -442,6 +442,7 @@ def update_timetable_entry(request, timetable_id):
 
     return JsonResponse({"success": True})
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["DELETE"])
@@ -470,6 +471,7 @@ def delete_timetable_entry(request, timetable_id):
         return JsonResponse({"error": "Failed to delete entry"}, status=500)
 
     return JsonResponse({"success": True})
+
 
 @csrf_exempt
 @admin_required

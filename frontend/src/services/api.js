@@ -1,240 +1,214 @@
 const API_BASE = import.meta.env.VITE_API_KEY;
 
+// ================= CORE REQUEST WRAPPER =================
+
+const request = async (url, options = {}) => {
+  const token = localStorage.getItem("admin_token");
+
+  const config = {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  };
+
+  const res = await fetch(url, config);
+
+  if (!res.ok) {
+    let errorMessage = "Request failed";
+    try {
+      const errorData = await res.json();
+      errorMessage = errorData?.error || errorMessage;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(errorMessage);
+  }
+
+  if (res.status === 204) return null;
+
+  // 👇 KEY ADDITION
+  const contentType = res.headers.get("content-type");
+
+  if (contentType?.includes("application/json")) {
+    return res.json();
+  }
+
+  if (contentType?.includes("application/octet-stream") ||
+      contentType?.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
+    return res.blob();
+  }
+
+  // fallback
+  return res.text();
+};
+
 // ================= ADMIN STUDENTS =================
 
-export const fetchStudents = async () => {
-  const res = await fetch(`${API_BASE}/admin/students/`, {
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
-  });
-  return res.json();
-};
+export const fetchStudents = () => request(`${API_BASE}/admin/students/`);
 
-export const createStudent = async (formData) => {
-  const res = await fetch(`${API_BASE}/admin/students/`, {
+export const createStudent = (data) =>
+  request(`${API_BASE}/admin/students/`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
-    body: JSON.stringify(formData),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
   });
-  return res.json();
-};
 
-export const updateStudentImage = async (studentId, formData) => {
-  const res = await fetch(
-    `${API_BASE}/admin/students/${studentId}/image/`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-      },
-      body: formData,
-    }
-  );
-  return res.json();
-};
-
-export const deleteStudentImage = async (studentId) => {
-  const res = await fetch(
-    `${API_BASE}/admin/students/${studentId}/image/delete/`,
-    {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-      },
-    }
-  );
-  return res.json();
-};
-
-export const deleteStudentFull = async (studentId) => {
-  const res = await fetch(
-    `${API_BASE}/admin/students/${studentId}/`,
-    {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-      },
-    }
-  );
-  return res.json();
-};
-
-// ================= ADMIN TEACHERS =================
-
-export const fetchTeachers = async () => {
-  const res = await fetch(`${API_BASE}/admin/teachers/`, {
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
-  });
-  return res.json();
-};
-
-export const createTeacher = async (formData) => {
-  const res = await fetch(`${API_BASE}/admin/teachers/`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
-    body: JSON.stringify(formData),
-  });
-  return res.json();
-};
-
-export const updateTeacherImage = async (teacherId, formData) => {
-  const res = await fetch(
-    `${API_BASE}/admin/teachers/${teacherId}/image/`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-      },
-      body: JSON.stringify(formData),
-    }
-  );
-  return res.json();
-};
-
-export const deleteTeacherImage = async (teacherId) => {
-  const res = await fetch(
-    `${API_BASE}/admin/teachers/${teacherId}/image/delete/`,
-    {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-      },
-    }
-  );
-  return res.json();
-};
-
-export const deleteTeacherFull = async (teacherId) => {
-  const res = await fetch(
-    `${API_BASE}/admin/teachers/${teacherId}/`,
-    {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-      },
-    }
-  );
-  return res.json();
-};
-
-// ---------------- ATTENDANCE ----------------
-export const verifyAttendance = async (formData) => {
-  const res = await fetch(`${API_BASE}/verify/`, {
+export const updateStudentImage = (studentId, formData) =>
+  request(`${API_BASE}/admin/students/${studentId}/image/`, {
     method: "POST",
     body: formData,
   });
-  return res.json();
-};
 
-// ---------------- QR SESSION ----------------
-export const createQrSession = async () => {
-  const res = await fetch(`${API_BASE}/qr/create/`, { method: "POST" });
-  return res.json();
-};
+export const deleteStudentImage = (studentId) =>
+  request(`${API_BASE}/admin/students/${studentId}/image/delete/`, {
+    method: "DELETE",
+  });
 
-// ✅ FIXED: Now takes only code, not full URL
-export const validateQrSession = async (code) => {
-  const res = await fetch(`${API_BASE}/qr/validate/${code}/`);
-  return res.json();
-};
+export const deleteStudentFull = (studentId) =>
+  request(`${API_BASE}/admin/students/${studentId}/`, {
+    method: "DELETE",
+  });
 
+// ================= ADMIN TEACHERS =================
 
-// ---------------- ADMIN AUTHENTICATION ----------------
-export const adminLogin = async ({organization, combo}) => {
-  const res = await fetch(`${API_BASE}/admin/login/`, {
+export const fetchTeachers = () => request(`${API_BASE}/admin/teachers/`);
+
+export const createTeacher = (data) =>
+  request(`${API_BASE}/admin/teachers/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+export const updateTeacherImage = (teacherId, formData) =>
+  request(`${API_BASE}/admin/teachers/${teacherId}/image/`, {
+    method: "POST",
+    body: formData,
+  });
+
+export const deleteTeacherImage = (teacherId) =>
+  request(`${API_BASE}/admin/teachers/${teacherId}/image/delete/`, {
+    method: "DELETE",
+  });
+
+export const deleteTeacherFull = (teacherId) =>
+  request(`${API_BASE}/admin/teachers/${teacherId}/`, {
+    method: "DELETE",
+  });
+
+// ================= ATTENDANCE =================
+
+export const verifyAttendance = (formData) =>
+  request(`${API_BASE}/verify/`, {
+    method: "POST",
+    body: formData,
+  });
+
+// ================= QR SESSION =================
+
+export const createQrSession = () =>
+  request(`${API_BASE}/qr/create/`, {
+    method: "POST",
+  });
+
+export const validateQrSession = (code) =>
+  request(`${API_BASE}/qr/validate/${code}/`);
+
+// ================= ADMIN AUTH =================
+
+export const adminLogin = ({ organization, combo }) =>
+  request(`${API_BASE}/admin/login/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ organization, combo }),
   });
-  return res.json();
-};
 
-// ---------------- Organizations Apis ----------------
-export const getOrganization = async () => {
-  const res = await fetch(`${API_BASE}/admin/organization/`, {
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
-  });
-  return res.json();
-};
+// ================= ORGANIZATION =================
 
-export const updateOrganization = async (data) => {
-  await fetch(`${API_BASE}/admin/organization/update/`, {
+export const getOrganization = () => request(`${API_BASE}/admin/organization/`);
+
+export const updateOrganization = (data) =>
+  request(`${API_BASE}/admin/organization/update/`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-};
 
-export const rotateAdminCombo = async (data) => {
-  await fetch(`${API_BASE}/admin/organization/rotate-combo/`, {
+export const rotateAdminCombo = (data) =>
+  request(`${API_BASE}/admin/organization/rotate-combo/`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-};
 
-export const createOrganization = async (data) => {
-  return fetch(`${API_BASE}/organizations/`, {
+export const createOrganization = (data) =>
+  request(`${API_BASE}/organizations/`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-};
 
-export const fetchBranches = async () => {
-  const res = await fetch(`${API_BASE}/admin/branches/`, {
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
-  });
-  return res.json();
-};
+// ================= BRANCHES =================
 
-export const createBranch = async (data) => {
-  return fetch(`${API_BASE}/admin/branches/`, {
+export const fetchBranches = () => request(`${API_BASE}/admin/branches/`);
+
+export const createBranch = (data) =>
+  request(`${API_BASE}/admin/branches/`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-};
 
-export const updateBranch = async (id, data) => {
-  return fetch(`${API_BASE}/admin/branches/${id}/`, {
+export const updateBranch = (id, data) =>
+  request(`${API_BASE}/admin/branches/${id}/`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-};
 
-export const deleteBranch = async (id) => {
-  return fetch(`${API_BASE}/admin/branches/${id}/`, {
+export const deleteBranch = (id) =>
+  request(`${API_BASE}/admin/branches/${id}/`, {
     method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem("admin_token")}`,
-    },
   });
-};
+
+// ================= TIMETABLE =================
+
+// List with optional query params
+export const fetchTimetable = (params = "") =>
+  request(`${API_BASE}/admin/timetable/${params}`);
+
+// Upload Excel (preview or commit)
+export const uploadTimetable = (formData, preview = true) =>
+  request(`${API_BASE}/admin/timetable/upload/?preview=${preview}`, {
+    method: "POST",
+    body: formData,
+  });
+
+// Download sample
+export const downloadSampleTimetable = () =>
+  request(`${API_BASE}/admin/timetable/download-sample-time-table`);
+
+// Update entry
+export const updateTimetableEntry = (id, data) =>
+  request(`${API_BASE}/admin/timetable/${id}/update/`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+// Delete entry
+export const deleteTimetableEntry = (id) =>
+  request(`${API_BASE}/admin/timetable/${id}/delete/`, {
+    method: "DELETE",
+  });
+
+// ================= SCHEDULER =================
+
+export const generateSubstitution = (data) =>
+  request(`${API_BASE}/scheduler/substitution/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });

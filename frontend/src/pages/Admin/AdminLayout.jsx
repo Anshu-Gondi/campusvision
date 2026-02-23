@@ -1,51 +1,89 @@
-import { Link, Outlet } from "react-router-dom";
+import { NavLink, Outlet } from "react-router-dom";
+import { useState } from "react";
 
 export default function AdminLayout() {
+  const [isActive, setIsActive] = useState(false);
+
+  const toggleSidebar = () => {
+    setIsActive(!isActive);
+  };
+
+  const closeSidebar = () => {
+    setIsActive(false);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("admin_token");
+    window.location.href = "/";
+  };
+
+  const linkClass = ({ isActive }) =>
+    isActive ? "sidebar-link active" : "sidebar-link";
+
   return (
-    <>
-      <nav className="navbar is-black">
-        <div className="navbar-brand">
-          <span className="navbar-item has-text-success">🔐 Admin Control</span>
+    <div className="admin-layout">
+      <aside className={`admin-sidebar ${isActive ? "is-active" : ""}`}>
+        <div className="sidebar-header">
+          <h2>🔐 Admin Control</h2>
         </div>
 
-        <div className="navbar-menu">
-          <div className="navbar-start">
-            <Link className="navbar-item" to="/admin">
-              Dashboard
-            </Link>
-            <Link className="navbar-item" to="/admin/orgs">
-              Organizations
-            </Link>
-            <Link className="navbar-item" to="/admin/branches">
-              Branches
-            </Link>
-            <Link className="navbar-item" to="/admin/students">
-              Students
-            </Link>
-            <Link className="navbar-item" to="/admin/teachers">
-              Teachers
-            </Link>
-          </div>
+        <nav className="menu">
+          <ul className="menu-list">
+            <li>
+              <NavLink to="/admin" end className={linkClass} onClick={closeSidebar}>
+                Dashboard
+              </NavLink>
+            </li>
+            <li>
+              <NavLink to="/admin/orgs" className={linkClass} onClick={closeSidebar}>
+                Organizations
+              </NavLink>
+            </li>
+            <li>
+              <NavLink to="/admin/branches" className={linkClass} onClick={closeSidebar}>
+                Branches
+              </NavLink>
+            </li>
+            <li>
+              <NavLink to="/admin/students" className={linkClass} onClick={closeSidebar}>
+                Students
+              </NavLink>
+            </li>
+            <li>
+              <NavLink to="/admin/teachers" className={linkClass} onClick={closeSidebar}>
+                Teachers
+              </NavLink>
+            </li>
+            <li>
+              <NavLink to="/admin/timetable" className={linkClass} onClick={closeSidebar}>
+                Timetable
+              </NavLink>
+            </li>
+          </ul>
+        </nav>
 
-          <div className="navbar-end">
-            <button
-              className="button is-danger is-small m-2"
-              onClick={() => {
-                localStorage.removeItem("admin_token");
-                window.location.href = "/";
-              }}
-            >
-              Logout
-            </button>
-          </div>
+        <div className="sidebar-footer">
+          <button
+            className="button is-danger is-small is-fullwidth"
+            onClick={handleLogout}
+          >
+            Logout
+          </button>
         </div>
-      </nav>
+      </aside>
 
-      <section className="section">
-        <div className="container">
-          <Outlet />
-        </div>
-      </section>
-    </>
+      <button
+        className="sidebar-toggle button is-black is-hidden-desktop"
+        onClick={toggleSidebar}
+      >
+        ☰
+      </button>
+
+      {isActive && <div className="admin-overlay" onClick={closeSidebar}></div>}
+
+      <main className="admin-content" onClick={closeSidebar}>
+        <Outlet />
+      </main>
+    </div>
   );
 }

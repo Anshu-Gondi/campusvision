@@ -8,7 +8,6 @@ import Teachers from "./pages/Teachers/teachers";
 import AttendanceScanner from "./pages/Attendance/AttendanceScanner";
 import AttendanceForm from "./pages/Attendance/AttendanceForm";
 import AttendanceCamera from "./pages/Attendance/AttendanceCamera";
-
 import Analytics from "./pages/Analytics/analytics";
 
 // Admin Pages
@@ -18,6 +17,7 @@ import AdminGuard from "./pages/Admin/AdminGuard";
 import Dashboard from "./pages/Admin/Dashboard";
 import Organizations from "./pages/Admin/Organizations";
 import Branches from "./pages/Admin/Branches";
+import Timetable from "./pages/Admin/Timetable";
 
 import RegisterOrganization from './pages/RegisterOrganization/RegisterOrganization.jsx';
 
@@ -48,6 +48,7 @@ createRoot(document.getElementById("root")).render(
           <Route path="branches" element={<Branches />} />
           <Route path="students" element={<Students />} />
           <Route path="teachers" element={<Teachers />} />
+          <Route path="timetable" element={<Timetable />} />
         </Route>
       </Routes>
     </BrowserRouter>
