@@ -68,31 +68,39 @@ class Department(models.Model):
 
 
 class Student(models.Model):
-    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE, db_index=True)
     department = models.ForeignKey(
-        Department, on_delete=models.SET_NULL, null=True, blank=True)
-    name = models.CharField(max_length=100)
-    roll_no = models.CharField(max_length=20)
-    class_name = models.CharField(max_length=50)
+        Department, on_delete=models.SET_NULL, null=True, blank=True
+    )
+
+    name = models.CharField(max_length=100, db_index=True)
+    roll_no = models.CharField(max_length=20, db_index=True)
+    class_name = models.CharField(max_length=50, db_index=True)
     section = models.CharField(max_length=10)
+
     image = models.ImageField(upload_to="students/", null=True, blank=True)
 
     class Meta:
         unique_together = ("branch", "roll_no")
-
+        indexes = [
+            models.Index(fields=["branch"]),
+            models.Index(fields=["name"]),
+            models.Index(fields=["roll_no"]),
+            models.Index(fields=["class_name"]),
+        ]
     def __str__(self):
         return f"{self.name} ({self.roll_no})"
 
 
 # ----------------- Teacher -----------------
 class Teacher(models.Model):
-    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE, db_index=True)
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True
     )
 
-    name = models.CharField(max_length=100)
-    employee_id = models.CharField(max_length=20)
+    name = models.CharField(max_length=100, db_index=True)
+    employee_id = models.CharField(max_length=20, db_index=True)
 
     email = models.EmailField(null=True, blank=True)
     phone = models.CharField(max_length=20, blank=True)
@@ -111,6 +119,11 @@ class Teacher(models.Model):
 
     class Meta:
         unique_together = ("branch", "employee_id")
+        indexes = [
+            models.Index(fields=["branch"]),
+            models.Index(fields=["name"]),
+            models.Index(fields=["employee_id"]),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.employee_id})"
