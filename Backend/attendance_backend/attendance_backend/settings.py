@@ -91,9 +91,8 @@ WSGI_APPLICATION = 'attendance_backend.wsgi.application'
 
 # Database
 DATABASES = {
-    "default": dj_database_url.parse(config("DATABASE_URL"), conn_max_age=600)
+    "default": dj_database_url.parse(config("DATABASE_URL"), conn_max_age=0)
 }
-
 # ================== MINIO STORAGE ==================
 
 DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"

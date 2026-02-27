@@ -46,7 +46,14 @@ const request = async (url, options = {}) => {
 
 // ================= ADMIN STUDENTS =================
 
-export const fetchStudents = () => request(`${API_BASE}/admin/students/`);
+export const fetchStudents = (params = {}) => {
+  const queryString = new URLSearchParams(params).toString();
+  const url = queryString
+    ? `${API_BASE}/admin/students/?${queryString}`
+    : `${API_BASE}/admin/students/`;
+
+  return request(url);
+};
 
 export const createStudent = (data) =>
   request(`${API_BASE}/admin/students/`, {
@@ -73,7 +80,14 @@ export const deleteStudentFull = (studentId) =>
 
 // ================= ADMIN TEACHERS =================
 
-export const fetchTeachers = () => request(`${API_BASE}/admin/teachers/`);
+export const fetchTeachers = (params = {}) => {
+  const queryString = new URLSearchParams(params).toString();
+  const url = queryString
+    ? `${API_BASE}/admin/teachers/?${queryString}`
+    : `${API_BASE}/admin/teachers/`;
+
+  return request(url);
+};
 
 export const createTeacher = (data) =>
   request(`${API_BASE}/admin/teachers/`, {
@@ -97,6 +111,30 @@ export const deleteTeacherFull = (teacherId) =>
   request(`${API_BASE}/admin/teachers/${teacherId}/`, {
     method: "DELETE",
   });
+
+// ================= BULK USER UPLOAD =================
+
+// Upload Teachers Excel (preview or commit)
+export const uploadTeachersExcel = (formData, preview = true) =>
+  request(`${API_BASE}/admin/user-upload/teachers/?preview=${preview}`, {
+    method: "POST",
+    body: formData,
+  });
+
+// Upload Students Excel (preview or commit)
+export const uploadStudentsExcel = (formData, preview = true) =>
+  request(`${API_BASE}/admin/user-upload/students/?preview=${preview}`, {
+    method: "POST",
+    body: formData,
+  });
+
+// Download Sample Teachers Excel
+export const downloadSampleTeachersExcel = () =>
+  request(`${API_BASE}/admin/user-upload/download-sample-teachers/`);
+
+// Download Sample Students Excel
+export const downloadSampleStudentsExcel = () =>
+  request(`${API_BASE}/admin/user-upload/download-sample-students/`);
 
 // ================= ATTENDANCE =================
 
@@ -176,8 +214,14 @@ export const deleteBranch = (id) =>
 // ================= TIMETABLE =================
 
 // List with optional query params
-export const fetchTimetable = (params = "") =>
-  request(`${API_BASE}/admin/timetable/${params}`);
+export const fetchTimetable = (params = {}) => {
+  // Convert params object to query string
+  const queryString = new URLSearchParams(params).toString();
+  const url = queryString
+    ? `${API_BASE}/admin/timetable/?${queryString}`
+    : `${API_BASE}/admin/timetable/`;
+  return request(url);
+};
 
 // Upload Excel (preview or commit)
 export const uploadTimetable = (formData, preview = true) =>

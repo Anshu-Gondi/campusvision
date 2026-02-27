@@ -5,12 +5,14 @@ from django.http import JsonResponse
 from django.utils.timezone import now
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core.paginator import Paginator
 from datetime import timedelta
 import hashlib
 import jwt
 import json
 import hmac
 from django.core.cache import cache
+from requests import request
 from .utils import rust_client as rust_backend
 from Admin.models import AdminAccessKey
 from attendance.models import Attendance, Branch, FaceImage, Organization, Student, Teacher
@@ -294,7 +296,38 @@ def teachers_view(request):
             branch__organization_id=org_id
         ).select_related("branch", "department")
 
-        return JsonResponse([
+        # ---------- FILTERS ----------
+        name = request.GET.get("name")
+        employee_id = request.GET.get("employee_id")
+        branch_id = request.GET.get("branch")
+
+        if name and name != "undefined":
+            teachers = teachers.filter(name__icontains=name)
+
+        if employee_id and employee_id != "undefined":
+            teachers = teachers.filter(employee_id__icontains=employee_id)
+
+        if branch_id and branch_id not in ["undefined", "null", ""]:
+            try:
+                teachers = teachers.filter(branch_id=int(branch_id))
+            except ValueError:
+                pass
+
+        # ---------- PAGINATION ----------
+        try:
+            page = int(request.GET.get("page", 1))
+        except ValueError:
+            page = 1
+
+        try:
+            page_size = int(request.GET.get("page_size", 10))
+        except ValueError:
+            page_size = 10
+
+        paginator = Paginator(teachers.order_by("id"), page_size)
+        page_obj = paginator.get_page(page)
+
+        data = [
             {
                 "id": t.id,
                 "name": t.name,
@@ -305,9 +338,17 @@ def teachers_view(request):
                 "subjects": t.subjects,
                 "can_teach_classes": t.can_teach_classes,
                 "reliability_score": t.reliability_score,
+                "image": presigned_url(t.image.name) if t.image else None,
             }
-            for t in teachers
-        ], safe=False)
+            for t in page_obj
+        ]
+
+        return JsonResponse({
+            "results": data,
+            "count": paginator.count,
+            "total_pages": paginator.num_pages,
+            "current_page": page_obj.number,
+        })
 
     # ================= CREATE =================
     try:
@@ -333,7 +374,6 @@ def teachers_view(request):
     teacher = Teacher.objects.create(
         name=name,
         employee_id=employee_id,
-        organization=branch.organization,
         branch=branch,
         department_id=body.get("department"),
         subjects=body.get("subjects", []),
@@ -507,6 +547,7 @@ def admin_upload_teacher_image(request, teacher_id):
         )
         return JsonResponse({"error": "Face processing failed"}, status=500)
 
+
 @csrf_exempt
 @admin_required
 @require_http_methods(["DELETE"])
@@ -537,26 +578,69 @@ def admin_delete_teacher_image(request, teacher_id):
 def students_view(request):
     org_id = request.admin["org_id"]
 
+
     # ================= LIST =================
     if request.method == "GET":
         students = Student.objects.filter(
             branch__organization_id=org_id
         ).select_related("branch", "department")
 
-        return JsonResponse([
-            {
-                "id": s.id,
-                "name": s.name,
-                "roll_no": s.roll_no,
-                "class_name": s.class_name,
-                "section": s.section,
-                "branch": s.branch.id,
-                "branch_name": s.branch.name,
-                "department": s.department.name if s.department else None,
-                "image": s.image.url if s.image else None,
-            }
-            for s in students
-        ], safe=False)
+    # ---------- FILTERS ----------
+    name = request.GET.get("name")
+    roll_no = request.GET.get("roll_no")
+    class_name = request.GET.get("class_name")
+    branch_id = request.GET.get("branch")
+
+    if name and name != "undefined":
+        students = students.filter(name__icontains=name)
+
+    if roll_no and roll_no != "undefined":
+        students = students.filter(roll_no__icontains=roll_no)
+
+    if class_name and class_name != "undefined":
+        students = students.filter(class_name__icontains=class_name)
+
+    if branch_id and branch_id not in ["undefined", "null", ""]:
+        try:
+            students = students.filter(branch_id=int(branch_id))
+        except ValueError:
+            pass
+
+    # ---------- PAGINATION ----------
+    try:
+        page = int(request.GET.get("page", 1))
+    except ValueError:
+        page = 1
+
+    try:
+        page_size = int(request.GET.get("page_size", 10))
+    except ValueError:
+        page_size = 10
+
+    paginator = Paginator(students.order_by("id"), page_size)
+    page_obj = paginator.get_page(page)
+
+    data = [
+        {
+            "id": s.id,
+            "name": s.name,
+            "roll_no": s.roll_no,
+            "class_name": s.class_name,
+            "section": s.section,
+            "branch": s.branch.id,
+            "branch_name": s.branch.name,
+            "department": s.department.name if s.department else None,
+            "image": presigned_url(s.image.name) if s.image else None,
+        }
+        for s in page_obj
+    ]
+
+    return JsonResponse({
+        "results": data,
+        "count": paginator.count,
+        "total_pages": paginator.num_pages,
+        "current_page": page_obj.number,
+    })
 
     # ================= CREATE =================
     try:
