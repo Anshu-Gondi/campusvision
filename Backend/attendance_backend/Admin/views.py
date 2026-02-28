@@ -302,10 +302,10 @@ def teachers_view(request):
         branch_id = request.GET.get("branch")
 
         if name and name != "undefined":
-            teachers = teachers.filter(name__icontains=name)
+            teachers = teachers.filter(name__istartswith=name)
 
         if employee_id and employee_id != "undefined":
-            teachers = teachers.filter(employee_id__icontains=employee_id)
+            teachers = teachers.filter(employee_id__istartswith=employee_id)
 
         if branch_id and branch_id not in ["undefined", "null", ""]:
             try:
@@ -578,7 +578,6 @@ def admin_delete_teacher_image(request, teacher_id):
 def students_view(request):
     org_id = request.admin["org_id"]
 
-
     # ================= LIST =================
     if request.method == "GET":
         students = Student.objects.filter(
@@ -592,13 +591,13 @@ def students_view(request):
     branch_id = request.GET.get("branch")
 
     if name and name != "undefined":
-        students = students.filter(name__icontains=name)
+        students = students.filter(name__istartswith=name)
 
     if roll_no and roll_no != "undefined":
-        students = students.filter(roll_no__icontains=roll_no)
+        students = students.filter(roll_no__istartswith=roll_no)
 
     if class_name and class_name != "undefined":
-        students = students.filter(class_name__icontains=class_name)
+        students = students.filter(class_name__istartswith=class_name)
 
     if branch_id and branch_id not in ["undefined", "null", ""]:
         try:

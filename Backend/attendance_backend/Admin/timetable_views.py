@@ -208,140 +208,136 @@ def upload_timetable_smart(request):
 @require_http_methods(["GET"])
 def download_sample_timetable(request):
     """
-    Returns a sample Excel showing both:
-      - Teacher-side timetable
-      - Student-side timetable
-    Features:
-      - Multiple classes & sections
-      - Different teachers per section
-      - Empty periods
-      - Fully empty days
-      - Legend sheet explaining how to fill the Excel
+    Returns a production-valid sample Excel using REAL DB data.
     """
+
     import random
 
-    # ---------------- SCHOOL SETUP ----------------
+    org_id = request.admin["org_id"]
+
+    # ---------------- FETCH REAL DATA ----------------
+    branches = list(
+        Branch.objects.filter(organization_id=org_id)
+    )
+
+    if not branches:
+        return JsonResponse({"error": "No branches found"}, status=400)
+
+    teachers = list(
+        Teacher.objects.filter(branch__organization_id=org_id)
+        .select_related("branch")
+    )
+
+    if not teachers:
+        return JsonResponse({"error": "No teachers found"}, status=400)
+
+    # Group teachers by branch
+    teachers_by_branch = {}
+    for t in teachers:
+        teachers_by_branch.setdefault(t.branch.id, []).append(t)
+
+    # ---------------- SAMPLE CLASS STRUCTURE ----------------
     classes = [
         {"class_name": "10", "section": "A"},
         {"class_name": "10", "section": "B"},
         {"class_name": "11", "section": "A"},
     ]
-    branch = "Main Campus"
 
-    # Subject pool with teacher base ids
-    subjects = [
-        ("Mathematics", "T001"),
-        ("Physics", "T002"),
-        ("Chemistry", "T003"),
-        ("English", "T004"),
-        ("Biology", "T005"),
-    ]
-
-    days_of_week = ["Monday", "Tuesday", "Wednesday",
-                    "Thursday", "Friday", "Saturday", "Sunday"]
+    days_of_week = VALID_DAYS
 
     student_data = []
     teacher_data = []
 
-    for cls in classes:
-        class_name = cls["class_name"]
-        section = cls["section"]
+    # ---------------- GENERATE SAMPLE ----------------
+    for branch in branches:
 
-        for day in days_of_week:
-            if day in ["Saturday", "Sunday"]:
-                # Fully empty day
-                student_data.append({
-                    "branch": branch,
-                    "class_name": class_name,
-                    "section": section,
-                    "subject": "",
-                    "teacher_employee_id": "",
-                    "day_of_week": day,
-                    "start_time": "",
-                    "end_time": ""
-                })
-                teacher_data.append({
-                    "branch": branch,
-                    "teacher_employee_id": "",
-                    "subject": "",
-                    "class_name": class_name,
-                    "section": section,
-                    "day_of_week": day,
-                    "start_time": "",
-                    "end_time": ""
-                })
-            else:
-                num_periods = random.randint(2, 4)  # number of periods per day
+        branch_teachers = teachers_by_branch.get(branch.id, [])
+        if not branch_teachers:
+            continue
+
+        for cls in classes:
+            class_name = cls["class_name"]
+            section = cls["section"]
+
+            for day in days_of_week:
+
+                # Fully empty weekends
+                if day in ["Saturday", "Sunday"]:
+                    student_data.append({
+                        "branch": branch.name,
+                        "class_name": class_name,
+                        "section": section,
+                        "subject": "",
+                        "teacher_employee_id": "",
+                        "day_of_week": day,
+                        "start_time": "",
+                        "end_time": ""
+                    })
+                    continue
+
+                num_periods = random.randint(2, 4)
                 start_hour = 9
+
                 for i in range(num_periods):
-                    subj, base_tid = random.choice(subjects)
-                    teacher_id = f"{base_tid}_{section}"  # unique per section
+
+                    teacher = random.choice(branch_teachers)
+
+                    subject = random.choice([
+                        "Mathematics",
+                        "Physics",
+                        "Chemistry",
+                        "English",
+                        "Biology"
+                    ])
+
                     start_time = f"{start_hour + i}:00"
                     end_time = f"{start_hour + i + 1}:00"
 
-                    # Randomly make some periods empty
+                    # Randomly create empty period
                     if random.random() < 0.2:
-                        subj = ""
-                        teacher_id = ""
+                        subject = ""
+                        teacher_employee_id = ""
+                    else:
+                        teacher_employee_id = teacher.employee_id
 
-                    # Student-side
                     student_data.append({
-                        "branch": branch,
+                        "branch": branch.name,
                         "class_name": class_name,
                         "section": section,
-                        "subject": subj,
-                        "teacher_employee_id": teacher_id,
-                        "day_of_week": day,
-                        "start_time": start_time,
-                        "end_time": end_time
-                    })
-                    # Teacher-side
-                    teacher_data.append({
-                        "branch": branch,
-                        "teacher_employee_id": teacher_id,
-                        "subject": subj,
-                        "class_name": class_name,
-                        "section": section,
+                        "subject": subject,
+                        "teacher_employee_id": teacher_employee_id,
                         "day_of_week": day,
                         "start_time": start_time,
                         "end_time": end_time
                     })
 
-    # ---------------- LEGEND SHEET ----------------
+    # ---------------- LEGEND ----------------
     legend_data = [
-        {"Column": "branch", "Description": "Name of the branch/school"},
+        {"Column": "branch", "Description": "Branch name (must match exactly)"},
         {"Column": "class_name", "Description": "Class number or name"},
-        {"Column": "section", "Description": "Section of the class"},
-        {"Column": "subject",
-            "Description": "Subject name (leave empty for empty period)"},
-        {"Column": "teacher_employee_id",
-            "Description": "Teacher's employee ID (leave empty for empty period)"},
-        {"Column": "day_of_week",
-            "Description": f"Day of the week. Must be one of {days_of_week}"},
-        {"Column": "start_time", "Description": "Start time in HH:MM format"},
-        {"Column": "end_time", "Description": "End time in HH:MM format"},
-        {"Column": "", "Description": "Leave Saturday/Sunday rows empty to indicate fully empty day"}
+        {"Column": "section", "Description": "Section of class"},
+        {"Column": "subject", "Description": "Subject name"},
+        {"Column": "teacher_employee_id", "Description": "REAL employee_id from DB"},
+        {"Column": "day_of_week", "Description": f"Must be one of {VALID_DAYS}"},
+        {"Column": "start_time", "Description": "HH:MM format"},
+        {"Column": "end_time", "Description": "HH:MM format"},
     ]
 
     df_student = pd.DataFrame(student_data)
-    df_teacher = pd.DataFrame(teacher_data)
     df_legend = pd.DataFrame(legend_data)
 
-    # ---------------- WRITE TO EXCEL ----------------
     buffer = io.BytesIO()
+
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df_student.to_excel(writer, index=False,
-                            sheet_name='Student_Timetable')
-        df_teacher.to_excel(writer, index=False,
-                            sheet_name='Teacher_Timetable')
+        df_student.to_excel(writer, index=False, sheet_name='Timetable')
         df_legend.to_excel(writer, index=False, sheet_name='Legend')
+
     buffer.seek(0)
 
     response = HttpResponse(
         buffer.getvalue(),
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
-
 
     response['Content-Disposition'] = 'attachment; filename=sample_timetable.xlsx'
     return response

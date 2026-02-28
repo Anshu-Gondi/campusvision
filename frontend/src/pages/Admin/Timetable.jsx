@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   fetchTimetable,
   deleteTimetableEntry,
   uploadTimetable,
   updateTimetableEntry,
   downloadSampleTimetable,
-  fetchTeachers, // optional API to get teacher list dynamically
+  fetchTeachersList, // optional API to get teacher list dynamically
 } from "../../services/api";
 
 export default function Timetable() {
@@ -33,7 +33,7 @@ export default function Timetable() {
   useEffect(() => {
     async function loadTeachers() {
       try {
-        const teacherList = await fetchTeachers(); // fetch {id, name}
+        const teacherList = await fetchTeachersList(); // fetch {id, name}
         setTeachers(teacherList);
       } catch (err) {
         console.warn("Failed to load teachers:", err.message);
@@ -42,7 +42,7 @@ export default function Timetable() {
     loadTeachers();
   }, []);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const paramsObj = {
@@ -53,7 +53,9 @@ export default function Timetable() {
         page_size: pageSize,
       };
 
-      if (filters.teacher_id) paramsObj.teacher_id = filters.teacher_id;
+      if (filters.teacher_id) {
+        paramsObj.teacher_id = filters.teacher_id;
+      }
 
       const params = new URLSearchParams(paramsObj).toString();
       const res = await fetchTimetable(params);
@@ -65,11 +67,11 @@ export default function Timetable() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters, page, pageSize]);
 
   useEffect(() => {
     loadData();
-  }, [filters, page]);
+  }, [filters, loadData, page]);
 
   // --- DELETE ---
   const handleDelete = async (id) => {
@@ -222,7 +224,7 @@ export default function Timetable() {
               onChange={handleFilterChange}
             >
               <option value="">All Days</option>
-              {["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map(d => (
+              {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(d => (
                 <option key={d} value={d}>{d}</option>
               ))}
             </select>

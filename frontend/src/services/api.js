@@ -89,6 +89,11 @@ export const fetchTeachers = (params = {}) => {
   return request(url);
 };
 
+export const fetchTeachersList = async (params = {}) => {
+  const data = await fetchTeachers(params);
+  return data.results || [];
+};
+
 export const createTeacher = (data) =>
   request(`${API_BASE}/admin/teachers/`, {
     method: "POST",
