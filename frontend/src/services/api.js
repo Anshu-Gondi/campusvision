@@ -197,6 +197,11 @@ export const createOrganization = (data) =>
 
 export const fetchBranches = () => request(`${API_BASE}/admin/branches/`);
 
+export const fetchBranchesList = async () => {
+  const res = await request(`${API_BASE}/admin/branches/`);
+  return res.results || res;
+};
+
 export const createBranch = (data) =>
   request(`${API_BASE}/admin/branches/`, {
     method: "POST",

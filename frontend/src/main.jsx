@@ -23,9 +23,14 @@ import RegisterOrganization from './pages/RegisterOrganization/RegisterOrganizat
 
 import 'bulma/css/bulma.min.css';
 import "leaflet/dist/leaflet.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const queryClient = new QueryClient();
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
+    <QueryClientProvider client={queryClient}>
+
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />} />
@@ -52,5 +57,6 @@ createRoot(document.getElementById("root")).render(
         </Route>
       </Routes>
     </BrowserRouter>
+    </QueryClientProvider>
   </StrictMode>
 );

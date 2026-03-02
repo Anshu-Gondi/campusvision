@@ -1,156 +1,147 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
 import {
   fetchTimetable,
   deleteTimetableEntry,
   uploadTimetable,
   updateTimetableEntry,
   downloadSampleTimetable,
-  fetchTeachersList, // optional API to get teacher list dynamically
+  fetchTeachersList,
+  fetchBranchesList,
 } from "../../services/api";
 
 export default function Timetable() {
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [previewData, setPreviewData] = useState(null);
-  const [selectedFile, setSelectedFile] = useState(null);
+  const queryClient = useQueryClient();
 
-  // --- FILTERS ---
+  // ---------------- FILTERS ----------------
   const [filters, setFilters] = useState({
+    branch_id: "",
     class_name: "",
     section: "",
     teacher_id: "",
-    day_of_week: "",
+    teacher_search: "",
+    day: "",
   });
 
-  const [teachers, setTeachers] = useState([]); // For teacher dropdown
-
-  // --- PAGINATION ---
+  const [ordering, setOrdering] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize] = useState(50);
-  const [total, setTotal] = useState(0);
+  const pageSize = 50;
 
-  // --- Load teachers for dropdown ---
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [previewData, setPreviewData] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
+  // ---------------- DEBOUNCE ----------------
+  const [debouncedTeacherSearch, setDebouncedTeacherSearch] = useState("");
+
   useEffect(() => {
-    async function loadTeachers() {
-      try {
-        const teacherList = await fetchTeachersList(); // fetch {id, name}
-        setTeachers(teacherList);
-      } catch (err) {
-        console.warn("Failed to load teachers:", err.message);
-      }
-    }
-    loadTeachers();
-  }, []);
+    const handler = setTimeout(() => {
+      setDebouncedTeacherSearch(filters.teacher_search);
+    }, 400);
+    return () => clearTimeout(handler);
+  }, [filters.teacher_search]);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const paramsObj = {
+  // ---------------- DROPDOWNS ----------------
+  const { data: teachersData = [] } = useQuery({
+    queryKey: ["teachers-list"],
+    queryFn: fetchTeachersList,
+  });
+
+  const { data: branchesData = [] } = useQuery({
+    queryKey: ["branches-list"],
+    queryFn: fetchBranchesList,
+  });
+
+  const teachers = useMemo(() => {
+    return teachersData?.results || teachersData || [];
+  }, [teachersData]);
+
+  const branches = useMemo(() => {
+    return branchesData?.results || branchesData || [];
+  }, [branchesData]);
+
+  // ---------------- TIMETABLE QUERY ----------------
+  const timetableQuery = useQuery({
+    queryKey: ["timetable", filters, ordering, page],
+    queryFn: async () => {
+      const params = {
+        branch_id: filters.branch_id,
+        teacher_id: filters.teacher_id,
         class_name: filters.class_name,
         section: filters.section,
-        day: filters.day_of_week,
+        day: filters.day,
+        ordering,
         page,
         page_size: pageSize,
       };
 
-      if (filters.teacher_id) {
-        paramsObj.teacher_id = filters.teacher_id;
-      }
+      const cleanParams = Object.fromEntries(
+        Object.entries(params).filter(([, v]) => v !== "")
+      );
 
-      const params = new URLSearchParams(paramsObj).toString();
-      const res = await fetchTimetable(params);
+      return fetchTimetable(cleanParams);
+    },
+    keepPreviousData: true,
+  });
 
-      setEntries(res.results || []);
-      setTotal(res.total || 0);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [filters, page, pageSize]);
+  const entries = timetableQuery.data?.results || [];
+  const total = timetableQuery.data?.total || 0;
 
-  useEffect(() => {
-    loadData();
-  }, [filters, loadData, page]);
+  // ---------------- OPTIMISTIC DELETE ----------------
+  const deleteMutation = useMutation({
+    mutationFn: deleteTimetableEntry,
+    onMutate: async (id) => {
+      setDeletingId(id);
+      await queryClient.cancelQueries(["timetable"]);
 
-  // --- DELETE ---
-  const handleDelete = async (id) => {
-    if (!confirm("Delete this entry?")) return;
-    try {
-      await deleteTimetableEntry(id);
-      loadData();
-    } catch (err) {
-      alert(err.message);
-    }
-  };
+      const previousData = queryClient.getQueryData([
+        "timetable",
+        filters,
+        ordering,
+        page,
+      ]);
 
-  // --- FILE HANDLERS ---
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setSelectedFile(file);
-  };
+      queryClient.setQueryData(
+        ["timetable", filters, ordering, page],
+        (old) => ({
+          ...old,
+          results: old.results.filter((e) => e.id !== id),
+        })
+      );
 
-  const handlePreview = async () => {
-    if (!selectedFile) return alert("Select file first");
-    const formData = new FormData();
-    formData.append("file", selectedFile);
+      return { previousData };
+    },
+    onError: (err, id, context) => {
+      queryClient.setQueryData(
+        ["timetable", filters, ordering, page],
+        context.previousData
+      );
+    },
+    onSettled: () => {
+      setDeletingId(null);
+      queryClient.invalidateQueries(["timetable"]);
+    },
+  });
 
-    try {
-      const preview = await uploadTimetable(formData, true);
-      setPreviewData(preview);
-      alert(`Preview loaded. Valid rows: ${preview.success_count}`);
-    } catch (err) {
-      alert(err.message);
-    }
-  };
+  // ---------------- UPDATE ----------------
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }) => updateTimetableEntry(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries(["timetable"]);
+    },
+  });
 
-  const handleCommit = async () => {
-    if (!selectedFile) return alert("Select file first");
-    if (!confirm("Commit this timetable to database?")) return;
+  // ---------------- UPLOAD ----------------
+  const uploadMutation = useMutation({
+    mutationFn: ({ formData, preview }) =>
+      uploadTimetable(formData, preview),
+    onSuccess: () => {
+      queryClient.invalidateQueries(["timetable"]);
+    },
+  });
 
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-
-    try {
-      const res = await uploadTimetable(formData, false);
-      alert(`Committed ${res.success_count} rows`);
-      setPreviewData(null);
-      setSelectedFile(null);
-      loadData();
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  // --- UPDATE INLINE ---
-  const handleUpdate = async (entry) => {
-    const newSubject = prompt("Update subject:", entry.subject);
-    if (!newSubject) return;
-
-    try {
-      await updateTimetableEntry(entry.id, { subject: newSubject });
-      loadData();
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  // --- DOWNLOAD SAMPLE ---
-  const handleDownloadSample = async () => {
-    try {
-      const blob = await downloadSampleTimetable();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "sample_timetable.xlsx";
-      a.click();
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  // --- FILTER HANDLER ---
+  // ---------------- HANDLERS ----------------
   const handleFilterChange = (e) => {
     setFilters((prev) => ({
       ...prev,
@@ -159,134 +150,261 @@ export default function Timetable() {
     setPage(1);
   };
 
-  if (loading) return <p>Loading timetable...</p>;
+  const handleDelete = (id) => {
+    if (!confirm("Delete this entry?")) return;
+    deleteMutation.mutate(id);
+  };
 
+  const handleUpdate = (entry) => {
+    const newSubject = prompt("Update subject:", entry.subject);
+    if (!newSubject) return;
+
+    updateMutation.mutate({
+      id: entry.id,
+      data: { subject: newSubject },
+    });
+  };
+
+  const handlePreview = async () => {
+    if (!selectedFile) return alert("Select file first");
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    const preview = await uploadMutation.mutateAsync({
+      formData,
+      preview: true,
+    });
+
+    setPreviewData(preview);
+  };
+
+  const handleCommit = async () => {
+    if (!selectedFile) return alert("Select file first");
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    await uploadMutation.mutateAsync({
+      formData,
+      preview: false,
+    });
+
+    setPreviewData(null);
+    setSelectedFile(null);
+  };
+
+  const handleDownloadSample = async () => {
+    const blob = await downloadSampleTimetable();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "sample_timetable.xlsx";
+    a.click();
+  };
+
+  const handleExport = async () => {
+    const params = {
+      branch_id: filters.branch_id,
+      teacher_id: filters.teacher_id,
+      class_name: filters.class_name,
+      section: filters.section,
+      day: filters.day,
+      ordering,
+      export: true,
+    };
+
+    const cleanParams = Object.fromEntries(
+      Object.entries(params).filter(([, v]) => v !== "")
+    );
+
+    const blob = await fetchTimetable(cleanParams);
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "filtered_timetable.xlsx";
+    a.click();
+  };
+
+  // ---------------- TEACHER SEARCH ----------------
+  const filteredTeachers = useMemo(() => {
+    return teachers.filter((t) =>
+      `${t.name} ${t.employee_id}`
+        .toLowerCase()
+        .includes(debouncedTeacherSearch.toLowerCase())
+    );
+  }, [teachers, debouncedTeacherSearch]);
+
+  // ---------------- UI ----------------
   return (
     <div>
       <h1 className="title has-text-success">Timetable</h1>
 
-      {/* Upload & Preview */}
+      {/* Upload */}
       <div className="box">
-        <input type="file" onChange={handleFileChange} />
+        <input type="file" onChange={(e) => setSelectedFile(e.target.files[0])} />
         <div className="buttons mt-2">
-          <button className="button is-info" onClick={handlePreview}>Preview</button>
-          <button className="button is-success" onClick={handleCommit}>Commit</button>
-          <button className="button is-warning" onClick={handleDownloadSample}>Download Sample</button>
+          <button
+            className="button is-info"
+            disabled={uploadMutation.isPending}
+            onClick={handlePreview}
+          >
+            {uploadMutation.isPending ? "Loading..." : "Preview"}
+          </button>
+
+          <button
+            className="button is-success"
+            disabled={uploadMutation.isPending}
+            onClick={handleCommit}
+          >
+            {uploadMutation.isPending ? "Uploading..." : "Commit"}
+          </button>
+
+          <button className="button is-warning" onClick={handleDownloadSample}>
+            Download Sample
+          </button>
         </div>
+
         {previewData && (
-          <div className="mt-3">
-            <p>Valid Rows: {previewData.success_count}</p>
-            <p>Errors: {previewData.results.filter(r => r.status === "fail").length}</p>
+          <div className="notification is-info mt-3">
+            <p><strong>Valid Rows:</strong> {previewData.valid_count}</p>
+            <p><strong>Errors:</strong> {previewData.error_count}</p>
           </div>
         )}
       </div>
 
       {/* Filters */}
       <div className="box">
-        <h2 className="subtitle">Filters</h2>
-        <div className="field is-grouped is-grouped-multiline">
-          <div className="control">
-            <input
-              className="input"
-              name="class_name"
-              placeholder="Class"
-              value={filters.class_name}
-              onChange={handleFilterChange}
-            />
+        <div className="columns is-multiline">
+
+          <div className="column is-3">
+            <div className="select is-fullwidth">
+              <select name="branch_id" value={filters.branch_id} onChange={handleFilterChange}>
+                <option value="">All Branches</option>
+                {branches.map(b => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="control">
-            <input
-              className="input"
-              name="section"
-              placeholder="Section"
-              value={filters.section}
-              onChange={handleFilterChange}
-            />
+
+          <div className="column is-2">
+            <input className="input" name="class_name" placeholder="Class"
+              value={filters.class_name} onChange={handleFilterChange} />
           </div>
-          <div className="control">
-            <select
-              className="input"
-              name="teacher_id"
-              value={filters.teacher_id}
-              onChange={handleFilterChange}
-            >
-              <option value="">All Teachers</option>
-              {teachers.map((t) => (
-                <option key={t.id} value={t.id}>{t.id} - {t.name}</option>
-              ))}
-            </select>
+
+          <div className="column is-2">
+            <input className="input" name="section" placeholder="Section"
+              value={filters.section} onChange={handleFilterChange} />
           </div>
-          <div className="control">
-            <select
-              className="input"
-              name="day_of_week"
-              value={filters.day_of_week}
-              onChange={handleFilterChange}
-            >
-              <option value="">All Days</option>
-              {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(d => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
+
+          <div className="column is-3">
+            <input className="input" name="teacher_search"
+              placeholder="Search Teacher"
+              value={filters.teacher_search}
+              onChange={handleFilterChange} />
           </div>
+
+          <div className="column is-2">
+            <div className="select is-fullwidth">
+              <select name="teacher_id" value={filters.teacher_id} onChange={handleFilterChange}>
+                <option value="">All Teachers</option>
+                {filteredTeachers.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.employee_id})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
         </div>
       </div>
 
-      {/* Timetable Table */}
-      <table className="table is-fullwidth is-striped is-dark">
-        <thead>
-          <tr>
-            <th>Day</th>
-            <th>Class</th>
-            <th>Section</th>
-            <th>Subject</th>
-            <th>Teacher</th>
-            <th>Time</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((e) => (
-            <tr key={e.id}>
-              <td>{e.day_of_week}</td>
-              <td>{e.class_name}</td>
-              <td>{e.section}</td>
-              <td>{e.subject}</td>
-              <td>{e.teacher_name}</td>
-              <td>{e.start_time} - {e.end_time}</td>
-              <td>
-                <div className="buttons are-small">
-                  <button className="button is-link" onClick={() => handleUpdate(e)}>Edit</button>
-                  <button className="button is-danger" onClick={() => handleDelete(e.id)}>Delete</button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {/* Controls */}
+      <div className="buttons mb-3">
+        <button className="button is-small" onClick={() => setOrdering("day_of_week")}>Day ↑</button>
+        <button className="button is-small" onClick={() => setOrdering("-day_of_week")}>Day ↓</button>
+        <button className="button is-small" onClick={() => setOrdering("start_time")}>Time ↑</button>
+        <button className="button is-small" onClick={() => setOrdering("-start_time")}>Time ↓</button>
+        <button className="button is-primary" onClick={handleExport}>
+          Export Filtered Data
+        </button>
+      </div>
 
-      {/* Pagination */}
-      <nav className="pagination" role="navigation" aria-label="pagination">
-        <button
-          className="pagination-previous"
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
-          disabled={page === 1}
-        >
-          Previous
-        </button>
-        <button
-          className="pagination-next"
-          onClick={() => setPage((p) => (p * pageSize < total ? p + 1 : p))}
-          disabled={page * pageSize >= total}
-        >
-          Next
-        </button>
-        <ul className="pagination-list">
-          <li>
-            <span className="pagination-link is-current">Page {page}</span>
-          </li>
-        </ul>
-      </nav>
+      {/* Table */}
+      {timetableQuery.isLoading ? (
+        <p>Loading timetable...</p>
+      ) : (
+        <>
+          <table className="table is-fullwidth is-striped is-dark">
+            <thead>
+              <tr>
+                <th>Branch</th>
+                <th>Day</th>
+                <th>Class</th>
+                <th>Section</th>
+                <th>Subject</th>
+                <th>Teacher</th>
+                <th>Time</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e) => (
+                <tr key={e.id}>
+                  <td>{e.branch}</td>
+                  <td>{e.day_of_week}</td>
+                  <td>{e.class_name}</td>
+                  <td>{e.section}</td>
+                  <td>{e.subject}</td>
+                  <td>{e.teacher_name}</td>
+                  <td>{e.start_time} - {e.end_time}</td>
+                  <td>
+                    <div className="buttons are-small">
+                      <button className="button is-link"
+                        onClick={() => handleUpdate(e)}>
+                        Edit
+                      </button>
+
+                      <button
+                        className="button is-danger"
+                        disabled={deletingId === e.id}
+                        onClick={() => handleDelete(e.id)}
+                      >
+                        {deletingId === e.id ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Pagination */}
+          <nav className="pagination is-centered mt-4">
+            <button
+              className="pagination-previous button"
+              disabled={page === 1}
+              onClick={() => setPage(p => p - 1)}
+            >
+              Previous
+            </button>
+
+            <button
+              className="pagination-next button"
+              disabled={page * pageSize >= total}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Next
+            </button>
+
+            <span className="pagination-link">
+              Page {page} of {Math.ceil(total / pageSize) || 1}
+            </span>
+          </nav>
+        </>
+      )}
     </div>
   );
 }
