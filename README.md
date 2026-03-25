@@ -1,71 +1,44 @@
-# Project Overview
-CampusVision is a web-based platform designed to facilitate campus navigation and provide real-time information regarding campus resources, events, and facilities. Our goal is to enhance the campus experience for students, staff, and visitors by integrating technology with service delivery.
+# Face Recognition Attendance System
 
-# Architecture
-The architecture of CampusVision is designed to be scalable, user-friendly, and maintainable. It is based on a microservices architecture that enables independent deployment, scaling, and management of different components.
+## Project Overview
+This project is a comprehensive Face Recognition Attendance System designed to automate the attendance process using advanced facial recognition technology.
 
-## Components
-1. **Frontend**: Developed using React, this component handles user interface elements and interactions.
-2. **Backend**: Built on Node.js and Express, the backend serves API requests and manages data processing.
-3. **Database**: MongoDB is used for data storage, providing flexibility and scalability for our data needs.
-4. **Authentication**: JSON Web Token (JWT) is used for secure user authentication.
+## Features
+- **Automated Attendance**: Automatically marks attendance based on face recognition.
+- **User-Friendly Interface**: Simple and intuitive interface for users.
+- **Real-time Processing**: Quick processing time for efficient attendance marking.
+- **Multiple Recognition Modes**: Supports single and group attendance marking.
 
-# Tech Stack Breakdown
-| Technology        | Purpose                              |
-|-------------------|--------------------------------------|
-| React             | Frontend framework                   |
-| Node.js          | Server-side JavaScript execution      |
-| Express           | Web framework for Node.js            |
-| MongoDB          | NoSQL database                        |
-| JWT               | Authentication                        |
-
-# Getting Started Guide
-## Prerequisites
-- Node.js (version 14 or higher)
-- MongoDB (version 4.2 or higher)
-- npm (Node Package Manager)
+## Architecture Details
+The system employs a microservices architecture consisting of several components:
+- **Frontend**: Built with HTML/CSS and JavaScript for user interaction.
+- **Backend**: RESTful API developed with Node.js and Express.
+- **Database**: Utilizes MongoDB for storing user and attendance data.
+- **Face Recognition Module**: Integrated with OpenCV for real-time face detection and recognition.
 
 ## Installation Steps
 1. Clone the repository:
-   ```sh
+   ```bash
    git clone https://github.com/Anshu-Gondi/campusvision.git
    cd campusvision
    ```
 2. Install dependencies:
-   ```sh
+   ```bash
    npm install
    ```
-3. Set up the database connection in `.env` file.
-4. Run the application:
-   ```sh
+3. Set up the database:
+   - Create a MongoDB database and update the connection string in the `.env` file.
+4. Start the server:
+   ```bash
    npm start
    ```
 
-# Deployment Instructions
-To deploy the application in a production environment:
-1. Ensure a production-grade database is set up.
-2. Modify `.env` for production configurations.
-3. Use a cloud provider such as Heroku or AWS.
+## Usage Instructions
+- To mark attendance, navigate to the attendance page and follow the on-screen instructions.
+- Ensure the camera is enabled for real-time recognition.
 
-# Security Guidelines
-- Regularly update dependencies to mitigate vulnerabilities.
-- Use HTTPS for secure data transmission.
-- Implement rate limiting on APIs.
+## Contribution Guidelines
+We welcome contributions! Please fork the repository and submit a pull request. Ensure to follow the existing code style and include relevant tests.
 
-# Contribution Policy
-1. Fork the repository.
-2. Create a new branch for your feature/fix:
-   ```sh
-   git checkout -b feature/my-feature
-   ```
-3. Commit your changes:
-   ```sh
-   git commit -m "Add some feature" 
-   ```
-4. Push to the branch:
-   ```sh
-   git push origin feature/my-feature
-   ```
-5. Open a pull request.
-
-For more details on contributing, please see our [CONTRIBUTING.md](CONTRIBUTING.md).
+## License Information
+This project is licensed under the MIT License. See the LICENSE file for more details.
