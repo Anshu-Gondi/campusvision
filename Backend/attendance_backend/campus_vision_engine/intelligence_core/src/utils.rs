@@ -24,9 +24,9 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse3") {
+        if is_x86_feature_detected!("sse4.1") {
             unsafe {
-                return cosine_similarity_sse(a, b);
+                return cosine_similarity_sse41(a, b);
             }
         }
     }
@@ -53,62 +53,55 @@ fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
     dot / denom
 }
 
+#[inline]
+pub fn normalize(v: &mut [f32]) {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
+    for x in v {
+        *x /= norm;
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse3")]
-unsafe fn cosine_similarity_sse(a: &[f32], b: &[f32]) -> f32 {
+#[target_feature(enable = "sse4.1")]
+unsafe fn cosine_similarity_sse41(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
     let len = a.len();
     let mut i = 0;
 
-    let mut dot_sum = _mm_setzero_ps();
-    let mut norm_a_sum = _mm_setzero_ps();
-    let mut norm_b_sum = _mm_setzero_ps();
+    let mut dot = 0.0;
+    let mut norm_a = 0.0;
+    let mut norm_b = 0.0;
 
+    // process 4 floats at a time
     while i + 4 <= len {
-        unsafe {
-            let va = _mm_loadu_ps(a.as_ptr().add(i));
-            let vb = _mm_loadu_ps(b.as_ptr().add(i));
+        let va = _mm_loadu_ps(a.as_ptr().add(i));
+        let vb = _mm_loadu_ps(b.as_ptr().add(i));
 
-            dot_sum = _mm_add_ps(dot_sum, _mm_mul_ps(va, vb));
-            norm_a_sum = _mm_add_ps(norm_a_sum, _mm_mul_ps(va, va));
-            norm_b_sum = _mm_add_ps(norm_b_sum, _mm_mul_ps(vb, vb));
-        }
+        // dot product (all lanes)
+        let dp = _mm_dp_ps(va, vb, 0xFF);
+        dot += _mm_cvtss_f32(dp);
+
+        // norms
+        let na = _mm_dp_ps(va, va, 0xFF);
+        let nb = _mm_dp_ps(vb, vb, 0xFF);
+
+        norm_a += _mm_cvtss_f32(na);
+        norm_b += _mm_cvtss_f32(nb);
 
         i += 4;
     }
 
-    let dot = unsafe { horizontal_sum(dot_sum) };
-    let norm_a = unsafe { horizontal_sum(norm_a_sum) };
-    let norm_b = unsafe { horizontal_sum(norm_b_sum) };
-
-    let mut dot_scalar = 0.0;
-    let mut norm_a_scalar = 0.0;
-    let mut norm_b_scalar = 0.0;
-
+    // tail (remaining elements)
     while i < len {
-        dot_scalar += a[i] * b[i];
-        norm_a_scalar += a[i] * a[i];
-        norm_b_scalar += b[i] * b[i];
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
         i += 1;
     }
 
-    let dot_total = dot + dot_scalar;
-    let norm_a_total = norm_a + norm_a_scalar;
-    let norm_b_total = norm_b + norm_b_scalar;
-
-    let denom = (norm_a_total.sqrt() * norm_b_total.sqrt()).max(1e-8);
-    dot_total / denom
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn horizontal_sum(v: __m128) -> f32 {
-    unsafe {
-        let shuf = _mm_movehdup_ps(v);
-        let sums = _mm_add_ps(v, shuf);
-        let shuf2 = _mm_movehl_ps(shuf, sums);
-        let sums2 = _mm_add_ss(sums, shuf2);
-        _mm_cvtss_f32(sums2)
-    }
+    let denom = (norm_a.sqrt() * norm_b.sqrt()).max(1e-8);
+    dot / denom
 }
 
 /// Compute IoU between two rectangles
