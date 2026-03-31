@@ -20,7 +20,7 @@ anyhow = "1.0"
 
 # ML + Vision
 opencv = "0.96.0"
-onnxruntime = "0.0.14"
+ort = "2.0.0-rc.12"
 
 # Parallelism
 rayon = "1.11"

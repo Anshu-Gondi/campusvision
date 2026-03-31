@@ -8,6 +8,35 @@ use std::time::{ Duration, Instant };
 use tokio::sync::oneshot;
 
 // ==========================
+// UTILITIES
+// ==========================
+
+fn normalize_embedding(v: &mut [f32]) {
+    let mut sum = 0.0;
+
+    // manual unroll (cheap SIMD gain)
+    let chunks = v.chunks_exact(4);
+    let remainder = chunks.remainder();
+
+    for chunk in chunks {
+        sum += chunk[0] * chunk[0]
+            + chunk[1] * chunk[1]
+            + chunk[2] * chunk[2]
+            + chunk[3] * chunk[3];
+    }
+
+    for &x in remainder {
+        sum += x * x;
+    }
+
+    let norm = sum.sqrt().max(1e-6);
+
+    for x in v.iter_mut() {
+        *x /= norm;
+    }
+}
+
+// ==========================
 // GLOBAL ORT ENVIRONMENT
 // ==========================
 
@@ -28,7 +57,7 @@ fn ort_env() -> &'static Environment {
 
 struct InferenceRequest {
     input: Array4<f32>,
-    respond_to: oneshot::Sender<Result<Vec<f32>>>,
+    respond_to: oneshot::Sender<Vec<Vec<f32>>>,
 }
 
 // ==========================
@@ -113,11 +142,39 @@ impl InferencePool {
     }
 
     pub async fn infer_batch(&self, batch: Vec<Array4<f32>>) -> Result<Vec<Vec<f32>>> {
-        let mut results = Vec::with_capacity(batch.len());
-        for input in batch {
-            results.push(self.infer(input).await?);
+        if batch.is_empty() {
+            return Ok(vec![]);
         }
-        Ok(results)
+
+        let (tx, rx) = oneshot::channel();
+
+        let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+
+        // 🔥 combine batch into single tensor
+        let batch_size = batch.len();
+        let shape = batch[0].shape();
+
+        let mut combined = ndarray::Array4::<f32>::zeros((
+            batch_size,
+            shape[1],
+            shape[2],
+            shape[3],
+        ));
+
+        for (i, input) in batch.into_iter().enumerate() {
+            combined.slice_mut(ndarray::s![i, .., .., ..]).assign(&input);
+        }
+
+        self.senders[index]
+            .send(InferenceRequest {
+                input: combined,
+                respond_to: tx,
+            })
+            .map_err(|e| anyhow!("Batch send failed: {}", e))?;
+
+        let flat = rx.await.map_err(|e| anyhow!("Worker crashed: {}", e))?;
+
+        Ok(flat)
     }
 
     pub async fn run_face_embedding(&self, input: Array4<f32>) -> Result<Vec<f32>> {
@@ -156,7 +213,13 @@ impl InferencePool {
             })
             .map_err(|_| anyhow!("Inference queue closed"))?;
 
-        rx.await.map_err(|_| anyhow!("Worker crashed"))?
+        let mut result = rx.await.map_err(|_| anyhow!("Worker crashed"))?;
+
+        if result.is_empty() {
+            return Err(anyhow!("Empty output"));
+        }
+
+        Ok(result.remove(0))
     }
 
     pub fn warm_up(&self, dummy: Array4<f32>) {
@@ -230,29 +293,58 @@ fn start_worker(
             ready.store(true, Ordering::SeqCst);
         }
 
+        let mut input_buffer: Option<ndarray::ArrayD<f32>> = None;
+
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
 
-            match receiver.recv_timeout(Duration::from_millis(100)) {
+            match receiver.recv() {
                 Ok(req) => {
                     let start = Instant::now();
 
+                    let input_dyn = if let Some(ref mut buf) = input_buffer {
+                        buf.assign(&req.input);
+                        buf
+                    } else {
+                        input_buffer = Some(req.input.into_dyn());
+                        input_buffer.as_mut().unwrap()
+                    };
+
                     let result = session
-                        .run(vec![req.input.into_dyn()])
+                        .run(vec![input_dyn.view()])
                         .map_err(|e| anyhow!("{e}"))
                         .and_then(|outputs| {
                             let output = &outputs[0];
                             let slice = output
                                 .as_slice()
                                 .ok_or_else(|| anyhow!("Output not contiguous"))?;
-                            Ok(slice.to_vec())
+
+                            // 🔥 batch aware split
+                            let dim = output.shape()[1]; // embedding size
+                            let batch = output.shape()[0];
+
+                            let mut results = Vec::with_capacity(batch);
+
+                            for i in 0..batch {
+                                let start = i * dim;
+                                let end = start + dim;
+
+                                let mut v = slice[start..end].to_vec();
+
+                                // 🔥 normalize HERE
+                                normalize_embedding(&mut v);
+
+                                results.push(v);
+                            }
+
+                            Ok(results)
                         });
 
                     metrics.record(start.elapsed());
 
-                    let _ = req.respond_to.send(result);
+                    let _ = req.respond_to.send(result.unwrap_or_default());
                 }
 
                 Err(mpsc::RecvTimeoutError::Timeout) => {

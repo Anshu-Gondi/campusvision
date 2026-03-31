@@ -91,18 +91,21 @@ fn get_or_create_shard(school_id: &str) -> Arc<SchoolShard> {
 /// Add embedding for a school
 pub fn add_face_embedding(
     school_id: &str,
-    mut embedding: Vec<f32>, // 👈 mutable for normalization
+    mut embedding: Vec<f32>,
     name: String,
     person_id: u64,
     roll_no: String,
-    role: String
+    role: String,
 ) -> Result<usize> {
     if !is_writer() {
         anyhow::bail!("Not allowed");
     }
 
     let shard = get_or_create_shard(school_id);
+
+    // 🔥 normalize role ONCE (no repeated work, no move issues)
     let is_teacher = role.eq_ignore_ascii_case("teacher");
+    let role_key: &str = if is_teacher { "teacher" } else { "student" };
 
     // 🔥 atomic id (NO LOCK)
     let id = shard.next_id.fetch_add(1, Ordering::Relaxed);
@@ -112,12 +115,14 @@ pub fn add_face_embedding(
 
     // 🔥 insert into HNSW
     if is_teacher {
-        shard.teacher_index
+        shard
+            .teacher_index
             .write()
             .unwrap()
             .insert((&embedding[..], id));
     } else {
-        shard.student_index
+        shard
+            .student_index
             .write()
             .unwrap()
             .insert((&embedding[..], id));
@@ -138,11 +143,7 @@ pub fn add_face_embedding(
         let mut hot = shard.metadata_hot.write().unwrap();
         hot.push(MetaHot {
             deleted: false,
-            role: if is_teacher {
-                1
-            } else {
-                0
-            },
+            role: if is_teacher { 1 } else { 0 },
             person_id,
         });
     }
@@ -155,14 +156,18 @@ pub fn add_face_embedding(
             name,
             person_id,
             roll_no,
-            role,
+            role, // 👈 moved exactly once (correct)
             reliability: None,
             deleted: false,
         });
     }
 
-    // cache
-    shard.cache.lock().unwrap().put(format!("{}:{}", role.to_lowercase(), person_id), embedding);
+    // 🔥 cache (NO allocation except format)
+    shard
+        .cache
+        .lock()
+        .unwrap()
+        .put(format!("{}:{}", role_key, person_id), embedding);
 
     Ok(id)
 }
@@ -317,29 +322,44 @@ pub fn load_all(base_path: &str) -> Result<()> {
         let mut metadata_hot: Vec<MetaHot> = Vec::new();
         let mut metadata_full: Vec<FaceMetadata> = Vec::new();
 
+        // 🔹 build fast lookup map ONCE
+        let mut emb_map: HashMap<usize, Vec<f32>> = HashMap::new();
+
+        for (e, id) in school.student_embeddings.iter().chain(school.teacher_embeddings.iter()) {
+            emb_map.insert(*id, e.clone());
+        }
+
         // 🔹 rebuild from saved data
         for (id, meta) in &school.metadata {
             let role_flag = if meta.role.eq_ignore_ascii_case("teacher") { 1 } else { 0 };
 
-            // find embedding
-            let emb = school.student_embeddings
-                .iter()
-                .chain(school.teacher_embeddings.iter())
-                .find(|(_, eid)| eid == id)
-                .map(|(e, _)| e.clone());
+            let emb = emb_map.get(id).cloned();
 
-            if let Some(e) = emb {
+            if let Some(mut e) = emb {
                 let id_usize = *id;
 
-                // ensure vec size
+                // 🔥 normalize on load
+                normalize(&mut e);
+
+                // 🔹 ensure vec size (FIXED VERSION)
                 if embeddings.len() <= id_usize {
                     embeddings.resize(id_usize + 1, vec![]);
+
                     metadata_hot.resize(id_usize + 1, MetaHot {
                         deleted: true,
                         role: 0,
                         person_id: 0,
                     });
-                    metadata_full.resize(id_usize + 1, meta.clone());
+
+                    metadata_full.resize_with(id_usize + 1, || FaceMetadata {
+                        id: "".into(),
+                        name: "".into(),
+                        person_id: 0,
+                        roll_no: "".into(),
+                        role: "".into(),
+                        reliability: None,
+                        deleted: true,
+                    });
                 }
 
                 embeddings[id_usize] = e.clone();
@@ -352,7 +372,7 @@ pub fn load_all(base_path: &str) -> Result<()> {
 
                 metadata_full[id_usize] = meta.clone();
 
-                // insert into index
+                // 🔹 insert into index
                 if role_flag == 1 {
                     teacher_idx.insert((&e[..], id_usize));
                 } else {
@@ -416,11 +436,16 @@ pub fn remove_face_embedding(school_id: &str, id: usize) -> Result<()> {
 
     let shard = get_or_create_shard(school_id);
 
-    let mut meta = shard.metadata_hot.write().unwrap();
+    let mut hot = shard.metadata_hot.write().unwrap();
+    let mut full = shard.metadata_full.write().unwrap();
 
-    if let Some(m) = meta.get_mut(&id) {
+    if let Some(m) = hot.get_mut(id) {
         if !m.deleted {
             m.deleted = true;
+
+            if let Some(f) = full.get_mut(id) {
+                f.deleted = true;
+            }
 
             let mut dc = shard.delete_count.lock().unwrap();
             *dc += 1;

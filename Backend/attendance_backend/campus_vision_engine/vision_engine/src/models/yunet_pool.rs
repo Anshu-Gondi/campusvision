@@ -1,13 +1,6 @@
-use anyhow::{anyhow, Result};
-use opencv::{
-    core::{Mat, Size},
-    objdetect::FaceDetectorYN,
-    prelude::*,
-};
-use std::sync::{
-    mpsc,
-    atomic::{AtomicUsize, Ordering},
-};
+use anyhow::{ anyhow, Result };
+use opencv::{ core::{ Mat, Size }, objdetect::FaceDetectorYN, prelude::* };
+use std::sync::{ mpsc, atomic::{ AtomicUsize, Ordering } };
 use tokio::sync::oneshot;
 use std::thread;
 
@@ -26,7 +19,7 @@ impl YuNetPool {
         let mut senders = Vec::with_capacity(workers);
 
         for _ in 0..workers {
-            let (tx, rx) = mpsc::sync_channel(32);
+            let (tx, rx) = mpsc::channel();
             start_worker(rx, model_path.to_string());
             senders.push(tx);
         }
@@ -37,38 +30,36 @@ impl YuNetPool {
         }
     }
 
-    pub async fn detect(&self, image: Mat) -> Result<Mat> {
+    pub async fn detect(&self, image: &Mat) -> Result<Mat> {
         let (tx, rx) = oneshot::channel();
 
-        let index = self.counter.fetch_add(1, Ordering::Relaxed)
-            % self.senders.len();
+        let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.senders.len();
 
         self.senders[index]
             .send(DetectRequest {
-                image,
+                image: image.clone(),
                 respond_to: tx,
             })
-            .map_err(|_| anyhow!("YuNet queue full or worker closed"))?;
+            .map_err(|e| anyhow!("YuNet send failed: {}", e))?;
 
-        rx.await.map_err(|_| anyhow!("YuNet worker crashed"))?
+        rx.await.map_err(|e| anyhow!("YuNet worker crashed: {}", e))?
     }
 }
 
-fn start_worker(
-    receiver: mpsc::Receiver<DetectRequest>,
-    model_path: String,
-) {
+fn start_worker(receiver: mpsc::Receiver<DetectRequest>, model_path: String) {
     thread::spawn(move || {
-        let mut detector = match FaceDetectorYN::create(
-            &model_path,
-            "",
-            Size::new(320, 320), // initial dummy
-            0.7,
-            0.3,
-            5000,
-            0,
-            0,
-        ) {
+        let mut detector = match
+            FaceDetectorYN::create(
+                &model_path,
+                "",
+                Size::new(320, 320), // initial dummy
+                0.7,
+                0.3,
+                5000,
+                0,
+                0
+            )
+        {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("Failed to create YuNet detector: {e}");
@@ -94,7 +85,9 @@ fn start_worker(
                 Ok(faces)
             })();
 
-            let _ = req.respond_to.send(result);
+            if req.respond_to.send(result).is_err() {
+                eprintln!("YuNet: receiver dropped");
+            }
         }
     });
 }

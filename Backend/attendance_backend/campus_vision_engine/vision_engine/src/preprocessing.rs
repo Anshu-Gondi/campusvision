@@ -25,23 +25,21 @@ pub async fn preprocess_image_dynamic(
         return Err(anyhow!("Decoded image is empty"));
     }
 
-    // 2️⃣ Resize large images
-    let max_side = 640;
+    // 2️⃣ Only downscale EXTREME images (4K+)
     let (w, h) = (mat.cols(), mat.rows());
 
-    if w > max_side || h > max_side {
-        let scale = (max_side as f64) / (w.max(h) as f64);
+    if w > 1280 || h > 1280 {
+        let scale = 1280.0 / (w.max(h) as f64);
 
         let new_size = Size::new(((w as f64) * scale) as i32, ((h as f64) * scale) as i32);
 
         let mut resized = Mat::default();
-        imgproc::resize(&mat, &mut resized, new_size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
-
+        imgproc::resize(&mat, &mut resized, new_size, 0.0, 0.0, imgproc::INTER_AREA)?;
         mat = resized;
     }
 
     // 3️⃣ Detect faces via pool
-    let faces = yunet_pool.detect(mat.clone()).await?;
+    let faces = yunet_pool.detect(&mat).await?;
 
     let (face_rect, landmarks) = pick_best_face(&faces)?.ok_or_else(||
         anyhow!("No face detected")
@@ -65,16 +63,25 @@ pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {
     }
 
     let mut best_idx = -1;
-    let mut best_score = -1.0_f32;
+
+    let mut best_score = -1.0;
 
     for row in 0..faces.rows() {
         let score = *faces.at_2d::<f32>(row, 14)?;
-        if score > best_score {
-            best_score = score;
+        let w = *faces.at_2d::<f32>(row, 2)?;
+        let h = *faces.at_2d::<f32>(row, 3)?;
+
+        let combined = score * (w * h);
+
+        if combined > best_score {
+            best_score = combined;
             best_idx = row;
         }
     }
 
+    if best_score < 0.7 {
+        return Ok(None);
+    }
     if best_idx < 0 {
         return Ok(None);
     }
@@ -85,6 +92,10 @@ pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {
     let h = *faces.at_2d::<f32>(best_idx, 3)? as i32;
 
     let bbox = Rect::new(x, y, w, h);
+
+    if w < 40 || h < 40 {
+        return Ok(None);
+    }
 
     let mut landmarks = Vec::with_capacity(5);
     for &col in &[4, 6, 8, 10, 12] {
@@ -119,22 +130,40 @@ pub fn align_face(
         return Err(anyhow!("Invalid face rect"));
     }
 
-    let face_roi = Mat::roi(mat, face_rect)?;
+    let pad = 0.2; // 20% padding
 
-    let (out_w, out_h) = target_size.unwrap_or((face_rect.width, face_rect.height));
+    let cx = face_rect.x + face_rect.width / 2;
+    let cy = face_rect.y + face_rect.height / 2;
+
+    let new_w = ((face_rect.width as f32) * (1.0 + pad)) as i32;
+    let new_h = ((face_rect.height as f32) * (1.0 + pad)) as i32;
+
+    let mut x = cx - new_w / 2;
+    let mut y = cy - new_h / 2;
+
+    x = x.clamp(0, mat.cols() - 1);
+    y = y.clamp(0, mat.rows() - 1);
+
+    let w = new_w.min(mat.cols() - x);
+    let h = new_h.min(mat.rows() - y);
+
+    let padded_rect = Rect::new(x, y, w, h);
+    let face_roi = Mat::roi(mat, padded_rect)?;
+
+    let (out_w, out_h) = target_size.unwrap_or((112, 112));
 
     // Canonical eye placement
     let desired_left_eye = Point2f::new((out_w as f32) * 0.35, (out_h as f32) * 0.4);
     let desired_right_eye = Point2f::new((out_w as f32) * 0.65, (out_h as f32) * 0.4);
 
     let left_eye = Point2f::new(
-        landmarks[1].x - (face_rect.x as f32),
-        landmarks[1].y - (face_rect.y as f32)
+        landmarks[1].x - (padded_rect.x as f32),
+        landmarks[1].y - (padded_rect.y as f32)
     );
 
     let right_eye = Point2f::new(
-        landmarks[0].x - (face_rect.x as f32),
-        landmarks[0].y - (face_rect.y as f32)
+        landmarks[0].x - (padded_rect.x as f32),
+        landmarks[0].y - (padded_rect.y as f32)
     );
 
     let src = Vector::from_slice(&[left_eye, right_eye]);
@@ -152,7 +181,18 @@ pub fn align_face(
     )?;
 
     if warp_mat.empty() {
-        return Err(anyhow!("Affine transform failed"));
+        let mut resized = Mat::default();
+
+        imgproc::resize(
+            &face_roi,
+            &mut resized,
+            Size::new(out_w, out_h),
+            0.0,
+            0.0,
+            imgproc::INTER_LINEAR
+        )?;
+
+        return Ok(resized);
     }
 
     let mut aligned = Mat::default();

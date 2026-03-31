@@ -12,8 +12,8 @@ pub struct FaceMetadata {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct MetaHot {
-    deleted: bool,
-    role: u8, // 0 = student, 1 = teacher
-    person_id: u64,
+pub struct MetaHot {
+    pub deleted: bool,
+    pub role: u8, // 0 = student, 1 = teacher
+    pub person_id: u64,
 }
