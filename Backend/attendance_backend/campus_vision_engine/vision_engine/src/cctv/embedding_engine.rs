@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::preprocessing::mat_to_array;
-use ndarray::{ Array4, Ix4 };
+use ndarray::Array4;
 use std::sync::Arc;
 use opencv::prelude::*;
 

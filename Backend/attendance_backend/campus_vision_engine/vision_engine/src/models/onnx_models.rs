@@ -1,8 +1,6 @@
 use anyhow::{ anyhow, Result };
 use ndarray::Array4;
-use once_cell::sync::OnceCell;
 use ort::{
-    environment::Environment,
     session::builder::{ GraphOptimizationLevel, SessionBuilder },
     value::Value,
 };
@@ -274,8 +272,6 @@ fn start_worker(
             ready.store(true, Ordering::SeqCst);
         }
 
-        let mut input_buffer: Option<ndarray::ArrayD<f32>> = None;
-
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -286,14 +282,6 @@ fn start_worker(
                     let start = Instant::now();
 
                     let input = req.input;
-
-                    let input_dyn = if let Some(ref mut buf) = input_buffer {
-                        buf.assign(&input);
-                        buf
-                    } else {
-                        input_buffer = Some(req.input.into_dyn());
-                        input_buffer.as_mut().unwrap()
-                    };
 
                     let result = (|| -> Result<Vec<Vec<f32>>> {
                         // 🔥 Flatten input (NO clone of ndarray needed)
