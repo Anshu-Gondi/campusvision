@@ -4,11 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "intelligence_py"
-version = "0.1.0"
-description = "Python bindings for the Intelligence Scheduler Rust library"
-readme = "README.md"       # Optional
+dynamic = ["version"]
+description = "Python bindings for CampusVision face recognition engine for scheduling purposes."
+readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary" }  # Your license metadata
+license = { file = "LICENSE" }
 authors = [
     { name="Anshu Gondi", email="agondi982@gmail.com" }
 ]
@@ -17,3 +17,7 @@ classifiers = [
     "Programming Language :: Rust",
     "Operating System :: OS Independent"
 ]
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "intelligence_py"

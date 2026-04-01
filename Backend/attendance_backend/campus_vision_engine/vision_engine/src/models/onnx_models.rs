@@ -1,7 +1,11 @@
 use anyhow::{ anyhow, Result };
 use ndarray::Array4;
 use once_cell::sync::OnceCell;
-use onnxruntime::{ environment::Environment, GraphOptimizationLevel };
+use ort::{
+    environment::Environment,
+    session::builder::{ GraphOptimizationLevel, SessionBuilder },
+    value::Value,
+};
 use std::sync::{ atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering }, mpsc, Arc };
 use std::thread::{ self, JoinHandle };
 use std::time::{ Duration, Instant };
@@ -19,10 +23,8 @@ fn normalize_embedding(v: &mut [f32]) {
     let remainder = chunks.remainder();
 
     for chunk in chunks {
-        sum += chunk[0] * chunk[0]
-            + chunk[1] * chunk[1]
-            + chunk[2] * chunk[2]
-            + chunk[3] * chunk[3];
+        sum +=
+            chunk[0] * chunk[0] + chunk[1] * chunk[1] + chunk[2] * chunk[2] + chunk[3] * chunk[3];
     }
 
     for &x in remainder {
@@ -34,21 +36,6 @@ fn normalize_embedding(v: &mut [f32]) {
     for x in v.iter_mut() {
         *x /= norm;
     }
-}
-
-// ==========================
-// GLOBAL ORT ENVIRONMENT
-// ==========================
-
-static ORT_ENV: OnceCell<Environment> = OnceCell::new();
-
-fn ort_env() -> &'static Environment {
-    ORT_ENV.get_or_init(|| {
-        Environment::builder()
-            .with_name("ort_env")
-            .build()
-            .expect("Failed to create ORT environment")
-    })
 }
 
 // ==========================
@@ -154,12 +141,7 @@ impl InferencePool {
         let batch_size = batch.len();
         let shape = batch[0].shape();
 
-        let mut combined = ndarray::Array4::<f32>::zeros((
-            batch_size,
-            shape[1],
-            shape[2],
-            shape[3],
-        ));
+        let mut combined = Array4::<f32>::zeros((batch_size, shape[1], shape[2], shape[3]));
 
         for (i, input) in batch.into_iter().enumerate() {
             combined.slice_mut(ndarray::s![i, .., .., ..]).assign(&input);
@@ -276,17 +258,16 @@ fn start_worker(
             }
         }
 
-        let env = ort_env();
-
-        let mut session = env
-            .new_session_builder()
-            .expect("Failed builder")
-            .with_number_threads(1)
-            .expect("Thread config failed")
-            .with_optimization_level(GraphOptimizationLevel::All)
-            .expect("Opt level failed")
-            .with_model_from_file(&model_path)
-            .expect("Model load failed");
+        let mut session = SessionBuilder::new()
+            .unwrap()
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .unwrap()
+            .with_intra_threads(1) // keep 1 per worker
+            .unwrap()
+            .with_parallel_execution(false)
+            .unwrap()
+            .commit_from_file(&model_path)
+            .unwrap();
 
         // mark worker ready AFTER model loaded
         if ready_counter.fetch_add(1, Ordering::SeqCst) + 1 == total_workers {
@@ -300,51 +281,65 @@ fn start_worker(
                 break;
             }
 
-            match receiver.recv() {
+            match receiver.recv_timeout(Duration::from_millis(10)) {
                 Ok(req) => {
                     let start = Instant::now();
 
+                    let input = req.input;
+
                     let input_dyn = if let Some(ref mut buf) = input_buffer {
-                        buf.assign(&req.input);
+                        buf.assign(&input);
                         buf
                     } else {
                         input_buffer = Some(req.input.into_dyn());
                         input_buffer.as_mut().unwrap()
                     };
 
-                    let result = session
-                        .run(vec![input_dyn.view()])
-                        .map_err(|e| anyhow!("{e}"))
-                        .and_then(|outputs| {
-                            let output = &outputs[0];
-                            let slice = output
-                                .as_slice()
-                                .ok_or_else(|| anyhow!("Output not contiguous"))?;
+                    let result = (|| -> Result<Vec<Vec<f32>>> {
+                        // 🔥 Flatten input (NO clone of ndarray needed)
+                        let shape = input.shape().to_vec();
+                        let data = input.into_raw_vec();
 
-                            // 🔥 batch aware split
-                            let dim = output.shape()[1]; // embedding size
-                            let batch = output.shape()[0];
+                        // Create ORT tensor
+                        let input_tensor = Value::from_array((shape.clone(), data))?;
 
-                            let mut results = Vec::with_capacity(batch);
+                        // ⚠️ IMPORTANT: replace "input" with your real model input name
+                        let outputs = session.run(vec![("input", input_tensor)])?;
 
-                            for i in 0..batch {
-                                let start = i * dim;
-                                let end = start + dim;
+                        let output = &outputs[0];
 
-                                let mut v = slice[start..end].to_vec();
+                        // 🔥 SAFEST extraction for this ORT version
+                        let (shape, data) = output.try_extract_tensor::<f32>()?;
 
-                                // 🔥 normalize HERE
-                                normalize_embedding(&mut v);
+                        let batch = shape[0] as usize;
+                        let dim = shape[1] as usize;
 
-                                results.push(v);
-                            }
+                        let mut results = Vec::with_capacity(batch);
 
-                            Ok(results)
-                        });
+                        for i in 0..batch {
+                            let start = i * dim;
+                            let end = start + dim;
+
+                            let mut v = data[start..end].to_vec();
+                            normalize_embedding(&mut v);
+
+                            results.push(v);
+                        }
+
+                        Ok(results)
+                    })();
 
                     metrics.record(start.elapsed());
 
-                    let _ = req.respond_to.send(result.unwrap_or_default());
+                    match result {
+                        Ok(res) => {
+                            let _ = req.respond_to.send(res);
+                        }
+                        Err(e) => {
+                            eprintln!("Inference error: {:?}", e);
+                            let _ = req.respond_to.send(vec![]);
+                        }
+                    }
                 }
 
                 Err(mpsc::RecvTimeoutError::Timeout) => {

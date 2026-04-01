@@ -19,7 +19,7 @@ impl YuNetPool {
         let mut senders = Vec::with_capacity(workers);
 
         for _ in 0..workers {
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = mpsc::sync_channel(200); // backpressure: 1 request per worker
             start_worker(rx, model_path.to_string());
             senders.push(tx);
         }

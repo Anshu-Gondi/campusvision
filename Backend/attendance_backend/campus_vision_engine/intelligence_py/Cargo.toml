@@ -1,7 +1,7 @@
 [package]
 name = "intelligence_py"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license-file = "LICENSE"
 
 [lib]
@@ -16,14 +16,9 @@ pyo3 = { version = "0.19.1", features = ["extension-module", "abi3"] }
 intelligence_core = { path = "../intelligence_core" }
 
 # Serialization (Python <-> Rust)
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
-chrono = { version = "0.4", features = ["serde"] }
-
-anyhow = "1.0"
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
-opt-level = "z"
+# DateTime & Error handling
+chrono = { workspace = true }
+anyhow = { workspace = true }
