@@ -35,7 +35,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[inline]
-fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
+pub fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
     let dot = a
         .iter()
         .zip(b.iter())
