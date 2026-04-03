@@ -25,19 +25,22 @@ fn is_writer() -> bool {
 // HNSW <'static, f32, DistCosine> - fully Send + Sync for Python FFI
 type IndexType = Hnsw<'static, f32, DistCosine>;
 
+// Internal data structure for a shard (school)
+struct ShardData {
+    embeddings: Vec<Vec<f32>>,
+    metadata_hot: Vec<MetaHot>,
+    metadata_full: Vec<FaceMetadata>,
+    next_id: usize,
+}
 // Core data structure for a school's face database
 struct SchoolShard {
+    data: RwLock<ShardData>,
+
     student_index: RwLock<IndexType>,
     teacher_index: RwLock<IndexType>,
 
-    embeddings: RwLock<Vec<Vec<f32>>>,
-    metadata_hot: RwLock<Vec<MetaHot>>,
-    metadata_full: RwLock<Vec<FaceMetadata>>,
-
     cache: Mutex<LruCache<String, Vec<f32>>>,
-    delete_count: Mutex<usize>,
-
-    next_id: AtomicUsize,
+    delete_count: AtomicUsize,
 }
 
 static SCHOOL_SHARDS: Lazy<RwLock<HashMap<String, Arc<SchoolShard>>>> = Lazy::new(||
@@ -76,13 +79,14 @@ fn get_or_create_shard(school_id: &str) -> Arc<SchoolShard> {
                 student_index: RwLock::new(Hnsw::new(16, 50_000, 100, 50, DistCosine)),
                 teacher_index: RwLock::new(Hnsw::new(16, 5_000, 100, 50, DistCosine)),
 
-                embeddings: RwLock::new(Vec::new()),
-                metadata_hot: RwLock::new(Vec::new()),
-                metadata_full: RwLock::new(Vec::new()),
-
                 cache: Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
-                delete_count: Mutex::new(0),
-                next_id: AtomicUsize::new(0),
+                data: RwLock::new(ShardData {
+                    embeddings: Vec::new(),
+                    metadata_hot: Vec::new(),
+                    metadata_full: Vec::new(),
+                    next_id: 0,
+                }),
+                delete_count: AtomicUsize::new(0),
             })
         })
     )
@@ -95,7 +99,7 @@ pub fn add_face_embedding(
     name: String,
     person_id: u64,
     roll_no: String,
-    role: String,
+    role: String
 ) -> Result<usize> {
     if !is_writer() {
         anyhow::bail!("Not allowed");
@@ -103,71 +107,58 @@ pub fn add_face_embedding(
 
     let shard = get_or_create_shard(school_id);
 
-    // 🔥 normalize role ONCE (no repeated work, no move issues)
     let is_teacher = role.eq_ignore_ascii_case("teacher");
     let role_key: &str = if is_teacher { "teacher" } else { "student" };
 
-    // 🔥 atomic id (NO LOCK)
-    let id = shard.next_id.fetch_add(1, Ordering::Relaxed);
-
-    // 🔥 normalize ONCE (big win)
     normalize(&mut embedding);
 
-    // 🔥 insert into HNSW
-    if is_teacher {
-        shard
-            .teacher_index
-            .write()
-            .unwrap()
-            .insert((&embedding[..], id));
-    } else {
-        shard
-            .student_index
-            .write()
-            .unwrap()
-            .insert((&embedding[..], id));
-    }
+    // ✅ SINGLE ATOMIC DATA UPDATE
+    let id = {
+        let mut d = shard.data.write().unwrap();
 
-    // 🔥 embeddings (dense vector)
-    {
-        let mut em = shard.embeddings.write().unwrap();
-        if em.len() == id {
-            em.push(embedding.clone());
-        } else {
-            em[id] = embedding.clone();
-        }
-    }
+        let id = d.next_id;
+        d.next_id += 1;
 
-    // 🔥 hot metadata (FAST PATH)
-    {
-        let mut hot = shard.metadata_hot.write().unwrap();
-        hot.push(MetaHot {
+        d.embeddings.push(embedding.clone());
+
+        d.metadata_hot.push(MetaHot {
             deleted: false,
-            role: if is_teacher { 1 } else { 0 },
+            role: if is_teacher {
+                1
+            } else {
+                0
+            },
             person_id,
         });
-    }
 
-    // 🔥 full metadata (cold path)
-    {
-        let mut full = shard.metadata_full.write().unwrap();
-        full.push(FaceMetadata {
+        d.metadata_full.push(FaceMetadata {
             id: id.to_string(),
             name,
             person_id,
             roll_no,
-            role, // 👈 moved exactly once (correct)
+            role,
             reliability: None,
             deleted: false,
         });
+
+        id
+    };
+
+    // ✅ HNSW AFTER DATA (safe)
+    if is_teacher {
+        shard.teacher_index
+            .write()
+            .unwrap()
+            .insert((&embedding[..], id));
+    } else {
+        shard.student_index
+            .write()
+            .unwrap()
+            .insert((&embedding[..], id));
     }
 
-    // 🔥 cache (NO allocation except format)
-    shard
-        .cache
-        .lock()
-        .unwrap()
-        .put(format!("{}:{}", role_key, person_id), embedding);
+    // ✅ cache
+    shard.cache.lock().unwrap().put(format!("{}:{}", role_key, person_id), embedding);
 
     Ok(id)
 }
@@ -182,24 +173,30 @@ pub fn search_in_role(
     let shard = get_or_create_shard(school_id);
     let is_teacher = role.eq_ignore_ascii_case("teacher");
 
-    let idx = if is_teacher {
-        shard.teacher_index.read().unwrap()
-    } else {
-        shard.student_index.read().unwrap()
-    };
+    // 🔹 Phase 1: search index ONLY
+    let raw_results = {
+        let idx = if is_teacher {
+            shard.teacher_index.read().unwrap()
+        } else {
+            shard.student_index.read().unwrap()
+        };
 
-    let hot = shard.metadata_hot.read().unwrap();
+        idx.search(embedding, k * 3, 100)
+            .into_iter()
+            .map(|n| (n.d_id, 1.0 - n.distance))
+            .collect::<Vec<_>>()
+    }; // index lock released here
 
-    idx.search(embedding, k * 3, 100)
+    // 🔹 Phase 2: validate against data safely
+    let d = shard.data.read().unwrap();
+
+    raw_results
         .into_iter()
-        .filter_map(|n| {
-            let m = &hot[n.d_id];
-
-            if !m.deleted {
-                Some((n.d_id, 1.0 - n.distance))
-            } else {
-                None
-            }
+        .filter_map(|(id, score)| {
+            d.metadata_hot
+                .get(id) // ✅ SAFE (no panic)
+                .filter(|m| !m.deleted) // ✅ skip deleted
+                .map(|_| (id, score))
         })
         .take(k)
         .collect()
@@ -242,22 +239,20 @@ pub fn save_all(base_path: &str) -> Result<()> {
     };
 
     for (school_id, shard) in shards {
-        let full = shard.metadata_full.read().unwrap();
-        let hot = shard.metadata_hot.read().unwrap();
-        let em = shard.embeddings.read().unwrap();
+        let d = shard.data.read().unwrap();
 
         let mut student_emb = Vec::new();
         let mut teacher_emb = Vec::new();
         let mut metadata = HashMap::new();
 
-        for (id, m) in full.iter().enumerate() {
-            if hot[id].deleted {
+        for (id, m) in d.metadata_full.iter().enumerate() {
+            if d.metadata_hot[id].deleted {
                 continue;
             }
 
-            let e = &em[id];
+            let e = &d.embeddings[id];
 
-            if hot[id].role == 1 {
+            if d.metadata_hot[id].role == 1 {
                 teacher_emb.push((e.clone(), id));
             } else {
                 student_emb.push((e.clone(), id));
@@ -306,8 +301,6 @@ pub fn load_all(base_path: &str) -> Result<()> {
     let data_bytes = fs::read(path.join("data.bin"))?;
     let data: SerializableData = bincode::deserialize(&data_bytes)?;
 
-    let mut shard_max_id = 0;
-
     for (school_id, school) in data.school_data {
         let shard = get_or_create_shard(&school_id);
 
@@ -322,7 +315,7 @@ pub fn load_all(base_path: &str) -> Result<()> {
         let mut metadata_hot: Vec<MetaHot> = Vec::new();
         let mut metadata_full: Vec<FaceMetadata> = Vec::new();
 
-        // 🔹 build fast lookup map ONCE
+        // 🔹 build lookup map
         let mut emb_map: HashMap<usize, Vec<f32>> = HashMap::new();
 
         for (e, id) in school.student_embeddings.iter().chain(school.teacher_embeddings.iter()) {
@@ -333,15 +326,12 @@ pub fn load_all(base_path: &str) -> Result<()> {
         for (id, meta) in &school.metadata {
             let role_flag = if meta.role.eq_ignore_ascii_case("teacher") { 1 } else { 0 };
 
-            let emb = emb_map.get(id).cloned();
-
-            if let Some(mut e) = emb {
+            if let Some(mut e) = emb_map.get(id).cloned() {
                 let id_usize = *id;
 
-                // 🔥 normalize on load
                 normalize(&mut e);
 
-                // 🔹 ensure vec size (FIXED VERSION)
+                // ensure capacity
                 if embeddings.len() <= id_usize {
                     embeddings.resize(id_usize + 1, vec![]);
 
@@ -372,7 +362,7 @@ pub fn load_all(base_path: &str) -> Result<()> {
 
                 metadata_full[id_usize] = meta.clone();
 
-                // 🔹 insert into index
+                // insert into index
                 if role_flag == 1 {
                     teacher_idx.insert((&e[..], id_usize));
                 } else {
@@ -383,15 +373,19 @@ pub fn load_all(base_path: &str) -> Result<()> {
             }
         }
 
-        // 🔹 swap everything
+        // ✅ STEP 1: swap indices (independent lifecycle — fine)
         *shard.student_index.write().unwrap() = student_idx;
         *shard.teacher_index.write().unwrap() = teacher_idx;
 
-        *shard.embeddings.write().unwrap() = embeddings;
-        *shard.metadata_hot.write().unwrap() = metadata_hot;
-        *shard.metadata_full.write().unwrap() = metadata_full;
+        // ✅ STEP 2: SINGLE ATOMIC DATA SWAP (this is the real fix)
+        {
+            let mut d = shard.data.write().unwrap();
 
-        shard.next_id.store(local_max_id + 1, Ordering::Relaxed);
+            d.embeddings = embeddings;
+            d.metadata_hot = metadata_hot;
+            d.metadata_full = metadata_full;
+            d.next_id = local_max_id + 1;
+        }
     }
 
     Ok(())
@@ -401,16 +395,19 @@ pub fn load_all(base_path: &str) -> Result<()> {
 pub fn get_metadata(school_id: &str, id: usize) -> Option<FaceMetadata> {
     let shard = get_or_create_shard(school_id);
 
-    let meta = shard.metadata_full.read().unwrap();
-    meta.get(id).cloned()
+    let d = shard.data.read().unwrap();
+
+    d.metadata_full.get(id).cloned()
 }
 
 /// Total registered people in a school
 pub fn get_total_faces(school_id: &str) -> usize {
     let shard = get_or_create_shard(school_id);
 
-    let meta = shard.metadata_hot.read().unwrap();
-    meta.iter()
+    let d = shard.data.read().unwrap();
+
+    d.metadata_hot
+        .iter()
         .filter(|m| !m.deleted)
         .count()
 }
@@ -419,11 +416,12 @@ pub fn get_total_faces(school_id: &str) -> usize {
 pub fn count_by_role(school_id: &str, role: &str) -> usize {
     let shard = get_or_create_shard(school_id);
 
-    let meta = shard.metadata_hot.read().unwrap();
-
     let role_flag = if role.eq_ignore_ascii_case("teacher") { 1 } else { 0 };
 
-    meta.iter()
+    let d = shard.data.read().unwrap();
+
+    d.metadata_hot
+        .iter()
         .filter(|m| !m.deleted && m.role == role_flag)
         .count()
 }
@@ -436,49 +434,63 @@ pub fn remove_face_embedding(school_id: &str, id: usize) -> Result<()> {
 
     let shard = get_or_create_shard(school_id);
 
-    let mut hot = shard.metadata_hot.write().unwrap();
-    let mut full = shard.metadata_full.write().unwrap();
+    // ✅ SINGLE WRITE LOCK (atomic update)
+    let deleted = {
+        let mut d = shard.data.write().unwrap();
 
-    if let Some(m) = hot.get_mut(id) {
-        if !m.deleted {
-            m.deleted = true;
+        if let Some(m) = d.metadata_hot.get_mut(id) {
+            if !m.deleted {
+                m.deleted = true;
 
-            if let Some(f) = full.get_mut(id) {
-                f.deleted = true;
+                if let Some(f) = d.metadata_full.get_mut(id) {
+                    f.deleted = true;
+                }
+
+                true
+            } else {
+                false
             }
-
-            let mut dc = shard.delete_count.lock().unwrap();
-            *dc += 1;
+        } else {
+            false
         }
+    }; // 🔥 lock released here
+
+    // ✅ atomic counter (NO mutex anymore)
+    if deleted {
+        shard.delete_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    // ✅ rebuild decision outside lock
     rebuild_index_if_needed(school_id);
 
     Ok(())
 }
 
 /// Get all embeddings for a person within a school
-fn get_embeddings_for_person(
+pub fn get_embeddings_for_person(
     school_id: &str,
     person_id: u64,
     role: &str
 ) -> Result<Vec<Vec<f32>>, String> {
     let shard = get_or_create_shard(school_id);
 
-    let meta = shard.metadata_hot.read().unwrap();
-    let em = shard.embeddings.read().unwrap();
-
     let role_flag = if role.eq_ignore_ascii_case("teacher") { 1 } else { 0 };
+
+    // ✅ single consistent snapshot
+    let d = shard.data.read().unwrap();
 
     let mut person_embeddings = Vec::new();
 
-    for (id, m) in meta.iter().enumerate() {
+    for (id, m) in d.metadata_hot.iter().enumerate() {
         if m.deleted {
             continue;
         }
 
         if m.person_id == person_id && m.role == role_flag {
-            person_embeddings.push(em[id].clone());
+            // safe because embeddings + metadata are aligned
+            if let Some(e) = d.embeddings.get(id) {
+                person_embeddings.push(e.clone());
+            }
         }
     }
 
@@ -496,16 +508,15 @@ pub fn batch_search(
     k: usize
 ) -> Vec<Option<(usize, f32)>> {
     let shard = get_or_create_shard(school_id);
-
     let is_teacher = role.eq_ignore_ascii_case("teacher");
 
+    // 🔹 Phase 1: read all data under single snapshot
+    let d = shard.data.read().unwrap();
     let idx = if is_teacher {
         shard.teacher_index.read().unwrap()
     } else {
         shard.student_index.read().unwrap()
     };
-
-    let hot = shard.metadata_hot.read().unwrap();
 
     embeddings
         .iter()
@@ -513,13 +524,10 @@ pub fn batch_search(
             idx.search(&emb[..], k * 3, 200)
                 .into_iter()
                 .find_map(|n| {
-                    let m = &hot[n.d_id];
-
-                    if !m.deleted {
-                        Some((n.d_id, 1.0 - n.distance))
-                    } else {
-                        None
-                    }
+                    // ✅ safe access, consistent
+                    d.metadata_hot.get(n.d_id).and_then(|m| {
+                        if !m.deleted { Some((n.d_id, 1.0 - n.distance)) } else { None }
+                    })
                 })
         })
         .collect()
@@ -534,7 +542,7 @@ pub fn rebuild_index_if_needed(school_id: &str) {
 
     let shard = get_or_create_shard(school_id);
 
-    // check delete count
+    // 🔹 check and reset delete count
     {
         let mut dc = shard.delete_count.lock().unwrap();
         if *dc < DELETE_THRESHOLD {
@@ -543,13 +551,14 @@ pub fn rebuild_index_if_needed(school_id: &str) {
         *dc = 0;
     }
 
-    // snapshot
-    let meta = shard.metadata_hot.read().unwrap().clone();
-    let em = shard.embeddings.read().unwrap().clone();
+    // 🔹 snapshot current data
+    let d = shard.data.read().unwrap();
+    let meta = d.metadata_hot.clone();
+    let em = d.embeddings.clone();
 
-    // rebuild
-    let mut new_s = Hnsw::new(16, 50_000, 100, 50, DistCosine);
-    let mut new_t = Hnsw::new(16, 5_000, 100, 50, DistCosine);
+    // 🔹 rebuild HNSW indices
+    let mut new_student_idx = Hnsw::new(16, 50_000, 100, 50, DistCosine);
+    let mut new_teacher_idx = Hnsw::new(16, 5_000, 100, 50, DistCosine);
 
     for (id, m) in meta.iter().enumerate() {
         if m.deleted {
@@ -559,13 +568,13 @@ pub fn rebuild_index_if_needed(school_id: &str) {
         let e = &em[id];
 
         if m.role == 1 {
-            new_t.insert((&e[..], id));
+            new_teacher_idx.insert((&e[..], id));
         } else {
-            new_s.insert((&e[..], id));
+            new_student_idx.insert((&e[..], id));
         }
     }
 
-    // swap
-    *shard.student_index.write().unwrap() = new_s;
-    *shard.teacher_index.write().unwrap() = new_t;
+    // 🔹 swap indices atomically
+    *shard.student_index.write().unwrap() = new_student_idx;
+    *shard.teacher_index.write().unwrap() = new_teacher_idx;
 }
