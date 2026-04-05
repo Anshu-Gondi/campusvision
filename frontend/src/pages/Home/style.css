@@ -5,8 +5,11 @@
 }
 
 /* Neon title glow */
-.title, .subtitle {
-  text-shadow: 0 0 10px #00ff00, 0 0 20px #ffff33;
+.title,
+.subtitle {
+  text-shadow:
+    0 0 10px #00ff00,
+    0 0 20px #ffff33;
   color: #faffb8 !important;
 }
 
@@ -15,10 +18,21 @@
   border: none;
 }
 
+/* Fix CTA button responsiveness */
+.register-cta {
+  max-width: 100%;
+  white-space: normal; /* allow wrapping */
+  text-align: center;
+  line-height: 1.3;
+  padding: 12px 18px;
+}
+
 /* Card glow */
 .card {
   border: 2px solid #ffff33;
-  box-shadow: 0 0 20px rgba(255, 255, 0, 0.5), 0 0 30px rgba(0, 255, 0, 0.6);
+  box-shadow:
+    0 0 20px rgba(255, 255, 0, 0.5),
+    0 0 30px rgba(0, 255, 0, 0.6);
   background-color: rgba(20, 20, 20, 0.9);
 }
 
@@ -44,4 +58,116 @@
   background-color: #ffeb3b;
   color: #0a3d0a;
   box-shadow: 0 0 15px #ffff33;
+}
+
+/* Feature boxes */
+.feature-box {
+  background-color: rgba(20, 20, 20, 0.9);
+  border: 1px solid #00ff00;
+  box-shadow: 0 0 15px rgba(0, 255, 0, 0.4);
+  padding: 20px;
+  border-radius: 10px;
+  color: #eaffea;
+}
+
+/* Section backgrounds */
+.has-background-black {
+  background-color: #0a0a0a;
+}
+
+.has-background-dark {
+  background-color: #121212;
+}
+
+/* Reduce excessive glow (more professional) */
+.title,
+.subtitle {
+  text-shadow: 0 0 6px rgba(0, 255, 0, 0.6);
+}
+
+/* ===== MOBILE RESPONSIVE (<= 768px) ===== */
+@media screen and (max-width: 768px) {
+  /* HERO TEXT */
+  .title.is-1 {
+    font-size: 2rem !important;
+  }
+
+  .title.is-2 {
+    font-size: 1.6rem !important;
+  }
+
+  .subtitle {
+    font-size: 1rem !important;
+    line-height: 1.5;
+  }
+
+  /* CONTAINER PADDING */
+  .section .container {
+    padding: 1.2rem !important;
+  }
+
+  /* BUTTONS */
+  .button {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+
+  /* COLUMNS STACK CLEANLY */
+  .columns {
+    margin: 0 !important;
+  }
+
+  .column {
+    padding: 0.5rem !important;
+  }
+
+  /* FEATURE BOX */
+  .feature-box {
+    padding: 15px;
+    font-size: 0.9rem;
+  }
+
+  /* REDUCE GLOW (important for mobile clarity) */
+  .title,
+  .subtitle {
+    text-shadow: 0 0 4px rgba(0, 255, 0, 0.4);
+  }
+
+  .card {
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
+  }
+
+  /* NAVBAR FIX */
+  .navbar-menu {
+    background: #0a3d0a;
+  }
+
+  .register-cta {
+    width: 100%;
+    font-size: 0.95rem;
+  }
+}
+
+/* ===== EXTRA SMALL DEVICES (<= 400px) ===== */
+@media screen and (max-width: 400px) {
+  .title.is-1 {
+    font-size: 1.7rem !important;
+  }
+
+  .title.is-2 {
+    font-size: 1.4rem !important;
+  }
+
+  .subtitle {
+    font-size: 0.9rem !important;
+  }
+
+  .feature-box {
+    padding: 12px;
+  }
+
+  .register-cta {
+    font-size: 0.9rem;
+    padding: 10px 14px;
+  }
 }

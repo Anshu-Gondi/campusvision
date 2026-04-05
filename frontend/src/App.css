@@ -5,6 +5,40 @@ body {
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 }
 
+.feature-card {
+  background: rgba(10, 40, 10, 0.9); /* dark green glass */
+  border-radius: 12px;
+  padding: 25px;
+  height: 100%;
+
+  /* subtle structure */
+  border: 1px solid rgba(0, 255, 0, 0.2);
+
+  /* soft green glow (controlled, not crazy) */
+  box-shadow: 0 0 15px rgba(0, 255, 0, 0.15);
+
+  transition: all 0.25s ease;
+}
+
+/* hover = slightly stronger glow + lift */
+.feature-card:hover {
+  transform: translateY(-5px);
+  border-color: rgba(0, 255, 0, 0.5);
+  box-shadow: 0 0 25px rgba(0, 255, 0, 0.3);
+}
+
+/* title */
+.feature-card .title {
+  color: #b6ffb6;
+  font-weight: 600;
+  text-shadow: 0 0 6px rgba(0, 255, 0, 0.5);
+}
+
+/* text */
+.feature-card p {
+  color: #eaffea;
+}
+
 /* Navbar */
 .navbar.is-dark {
   background: #0a3d0a;
@@ -174,4 +208,140 @@ body {
   .admin-content {
     padding: 80px 20px 30px 20px;
   }
+}
+
+/* Cleaner Navbar */
+.main-navbar {
+  background: rgba(10, 61, 10, 0.9);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid rgba(0, 255, 0, 0.3);
+}
+
+/* Brand */
+.brand {
+  font-weight: 700;
+  font-size: 1.2rem;
+  color: #eaffea !important;
+}
+
+/* Admin link (secondary) */
+.admin-link {
+  color: #c8facc !important;
+  margin-right: 10px;
+}
+
+.admin-link:hover {
+  color: #ffffff !important;
+}
+
+/* Register button (primary CTA) */
+.register-btn {
+  margin-left: 10px;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+}
+
+/* Remove excessive glow from navbar */
+.navbar-item {
+  text-shadow: none !important;
+}
+
+/* ===== RESPONSIVE (TABLET + MOBILE) ===== */
+@media screen and (max-width: 768px) {
+
+  /* ===== TEXT SCALING ===== */
+  .title.is-1 {
+    font-size: 2rem !important;
+  }
+
+  .title.is-2 {
+    font-size: 1.6rem !important;
+  }
+
+  .title.is-4 {
+    font-size: 1.2rem !important;
+  }
+
+  .subtitle {
+    font-size: 1rem !important;
+    line-height: 1.5;
+  }
+
+  /* ===== CONTAINER ===== */
+  .section .container {
+    padding: 1.2rem !important;
+    border-radius: 10px;
+  }
+
+  /* ===== FEATURE CARDS ===== */
+  .feature-card {
+    padding: 18px;
+    border-radius: 10px;
+  }
+
+  /* Reduce glow (important for readability) */
+  .feature-card {
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.15);
+  }
+
+  /* ===== BUTTONS ===== */
+  .button {
+    width: 100%;
+    margin-bottom: 10px;
+    font-size: 0.95rem;
+  }
+
+  /* ===== NAVBAR ===== */
+  .navbar-menu {
+    background: #0a3d0a;
+    padding: 10px 0;
+  }
+
+  .navbar-end {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .register-btn {
+    margin: 10px;
+  }
+
+  .admin-link {
+    margin: 5px 10px;
+  }
+
+}
+
+/* ===== EXTRA SMALL DEVICES ===== */
+@media screen and (max-width: 400px) {
+
+  /* TEXT */
+  .title.is-1 {
+    font-size: 1.6rem !important;
+  }
+
+  .title.is-2 {
+    font-size: 1.3rem !important;
+  }
+
+  .title.is-4 {
+    font-size: 1.05rem !important;
+  }
+
+  .subtitle {
+    font-size: 0.9rem !important;
+  }
+
+  /* CARDS */
+  .feature-card {
+    padding: 14px;
+  }
+
+  /* BUTTONS */
+  .button {
+    font-size: 0.9rem;
+    padding: 10px;
+  }
+
 }

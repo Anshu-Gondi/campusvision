@@ -1,54 +1,104 @@
 import { Link } from "react-router-dom";
-import "./style.css"; // import our glowing theme
+import "./style.css";
 
 function Home() {
   return (
-    <section className="hero is-fullheight is-dark is-bold">
-      <div className="hero-body">
-        <div className="container has-text-centered">
-          <h1 className="title is-1">✨ Welcome to Attendance System ✨</h1>
-          <h2 className="subtitle is-4">Manage Students, Teachers, and Attendance with Ease</h2>
+    <>
+      {/* HERO */}
+      <section className="hero is-fullheight is-dark is-bold">
+        <div className="hero-body">
+          <div className="container has-text-centered">
+            <h1 className="title is-1">
+              Stop Proxy Attendance. Automate It.
+            </h1>
 
-          <div className="columns is-centered mt-6">
-            {/* Register Records */}
-            <div className="column is-4">
-              <div className="card">
-                <div className="card-content">
-                  <p className="title is-4">Register Records</p>
-                  <p className="subtitle is-6">Add Students or Teachers</p>
-                  <Link to="/students" className="button is-primary is-fullwidth mb-2">
-                    Student Records
-                  </Link>
-                  <Link to="/teachers" className="button is-link is-fullwidth">
-                    Teacher Records
-                  </Link>
-                </div>
+            <h2 className="subtitle is-4 mt-4">
+              Face Recognition + Location Verification + CCTV Validation.
+              Integrated with a dedicated mobile app for attendance capture.
+              Designed for institutions that need fraud-resistant attendance systems.
+            </h2>
+
+            <div className="mt-6">
+              <Link to="/register-org" className="button is-success register-cta">
+                Register Your Institution
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* HOW IT WORKS */}
+      <section className="section clean-section">
+        <div className="container has-text-centered">
+          <h1 className="title is-2 section-title">How CampusVision Works</h1>
+
+          <div className="columns mt-6 is-variable is-5">
+            <div className="column">
+              <div className="feature-card">
+                <h3 className="title is-5">Face Recognition</h3>
+                <p>
+                  Attendance is marked instantly using face scan.
+                  No manual entry. No proxy.
+                </p>
               </div>
             </div>
 
-            {/* Start Attendance */}
-            <div className="column is-4">
-              <div className="card">
-                <div className="card-content">
-                  <p className="title is-4">Start Attendance</p>
-                  <p className="subtitle is-6">Mark Daily Attendance Quickly</p>
-                  <Link to="/attendance/scan" className="button is-success is-fullwidth">
-                    Take Attendance
-                  </Link>
-                </div>
+            <div className="column">
+              <div className="feature-card">
+                <h3 className="title is-5">Location Validation</h3>
+                <p>
+                  System verifies presence inside campus.
+                  Attempts from outside are automatically flagged.
+                </p>
+              </div>
+            </div>
+
+            <div className="column">
+              <div className="feature-card">
+                <h3 className="title is-5">CCTV Verification</h3>
+                <p>
+                  Remote entries are validated using CCTV within
+                  a controlled time window.
+                </p>
               </div>
             </div>
           </div>
+        </div>
+      </section>
 
-          {/* Analytics */}
+      {/* ADMIN CONTROL */}
+      <section className="section has-background-dark">
+        <div className="container has-text-centered">
+          <h1 className="title is-2">Built for Institutions</h1>
+
+          <p className="subtitle is-5 mt-4">
+            Control multiple branches, manage timetables,
+            and monitor attendance analytics — all from one system.
+          </p>
+
           <div className="mt-5">
-            <Link to="/analytics" className="button is-warning is-medium">
-              View Analytics
+            <Link to="/admin-access" className="button is-primary is-medium">
+              Admin Access
             </Link>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
+
+      {/* FINAL CTA */}
+      <section className="section has-background-black">
+        <div className="container has-text-centered">
+          <h1 className="title is-3">
+            Secure Your Attendance System Today
+          </h1>
+
+          <div className="mt-5">
+            <Link to="/register-org" className="button is-success is-medium">
+              Get Started
+            </Link>
+          </div>
+        </div>
+      </section>
+    </>
   );
 }
 

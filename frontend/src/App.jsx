@@ -1,11 +1,9 @@
 import { Routes, Route, Link } from "react-router-dom";
 import { useState } from "react";
 
-import Students from "./pages/Students/students";
-import Teachers from "./pages/Teachers/teachers";
-import AttendanceScanner from "./pages/Attendance/AttendanceScanner";
-import Analytics from "./pages/Analytics/analytics";
 import Home from "./pages/Home/home";
+import RegisterOrganization from "./pages/RegisterOrganization/RegisterOrganization";
+import AdminAccess from "./pages/AdminAccess/AdminAccess";
 
 import "./App.css";
 
@@ -22,18 +20,15 @@ function App() {
 
   return (
     <>
-      {/* Navbar */}
-      <nav className="navbar is-dark" role="navigation">
+      {/* NAVBAR */}
+      <nav className="navbar is-dark main-navbar" role="navigation">
         <div className="navbar-brand">
-          <Link className="navbar-item" to="/" onClick={closeNavbar}>
+          <Link className="navbar-item brand" to="/" onClick={closeNavbar}>
             CampusVision
           </Link>
 
-          {/* Burger Menu (Mobile) */}
           <button
             className={`navbar-burger ${isActive ? "is-active" : ""}`}
-            aria-label="menu"
-            aria-expanded="false"
             onClick={toggleNavbar}
           >
             <span></span>
@@ -43,32 +38,37 @@ function App() {
         </div>
 
         <div className={`navbar-menu ${isActive ? "is-active" : ""}`}>
-          <div className="navbar-start">
-            <Link className="navbar-item" to="/students" onClick={closeNavbar}>
-              Students
+          <div className="navbar-end">
+
+            {/* Secondary */}
+            <Link
+              className="navbar-item admin-link"
+              to="/admin-access"
+              onClick={closeNavbar}
+            >
+              Admin Access
             </Link>
-            <Link className="navbar-item" to="/teachers" onClick={closeNavbar}>
-              Teachers
+
+            {/* Primary CTA */}
+            <Link
+              className="button is-success register-btn"
+              to="/register-org"
+              onClick={closeNavbar}
+            >
+              Register Institution
             </Link>
-            <Link className="navbar-item" to="/attendance/scan" onClick={closeNavbar}>
-              Attendance
-            </Link>
-            <Link className="navbar-item" to="/analytics" onClick={closeNavbar}>
-              Analytics
-            </Link>
+
           </div>
         </div>
       </nav>
 
-      {/* Page Content */}
+      {/* PAGE */}
       <section className="section">
         <div className="container">
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/students" element={<Students />} />
-            <Route path="/teachers" element={<Teachers />} />
-            <Route path="/attendance/scan" element={<AttendanceScanner />} />
-            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/register-org" element={<RegisterOrganization />} />
+            <Route path="/admin-access" element={<AdminAccess />} />
           </Routes>
         </div>
       </section>
