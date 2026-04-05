@@ -1,5 +1,5 @@
 use crate::metadata::{ FaceMetadata, MetaHot };
-use crate::utils::{ cosine_similarity, normalize };
+use crate::utils::normalize;
 use anyhow::Result;
 use hnsw_rs::prelude::*;
 use lru::LruCache;
@@ -25,6 +25,21 @@ fn is_writer() -> bool {
 // HNSW <'static, f32, DistCosine> - fully Send + Sync for Python FFI
 type IndexType = Hnsw<'static, f32, DistCosine>;
 
+// tests helper
+pub fn clear_all() {
+    let mut map = SCHOOL_SHARDS.write().unwrap();
+    map.clear();
+}
+
+// FOR TESTING PURPOSES ONLY: force save (ignoring interval)
+pub fn force_save_all(base_path: &str) -> Result<()> {
+    // reset timer so should_save() returns true immediately
+    let m = LAST_SAVE.get_or_init(|| Mutex::new(Instant::now()));
+    *m.lock().unwrap() = Instant::now()
+        .checked_sub(SAVE_INTERVAL)
+        .unwrap_or(Instant::now());
+    save_all(base_path)
+}
 // Internal data structure for a shard (school)
 struct ShardData {
     embeddings: Vec<Vec<f32>>,
@@ -51,7 +66,10 @@ static LAST_SAVE: OnceLock<Mutex<Instant>> = OnceLock::new();
 const SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
 fn should_save() -> bool {
-    let m = LAST_SAVE.get_or_init(|| Mutex::new(Instant::now() - SAVE_INTERVAL));
+    let m = LAST_SAVE.get_or_init(|| {
+        let t = Instant::now().checked_sub(SAVE_INTERVAL).unwrap_or(Instant::now()); // if uptime < interval, just use now
+        Mutex::new(t)
+    });
     let mut last = m.lock().unwrap();
 
     if last.elapsed() >= SAVE_INTERVAL {
@@ -294,12 +312,20 @@ pub fn load_all(base_path: &str) -> Result<()> {
     }
 
     let path = Path::new(base_path);
-    if !path.exists() {
+    let data_file = path.join("data.bin");
+
+    // check the FILE exists, not just the directory
+    if !data_file.exists() {
         return Ok(());
     }
 
-    let data_bytes = fs::read(path.join("data.bin"))?;
-    let data: SerializableData = bincode::deserialize(&data_bytes)?;
+    let data_bytes = fs::read(&data_file)?;
+    let data: SerializableData = match bincode::deserialize(&data_bytes) {
+        Ok(d) => d,
+        Err(_) => {
+            return Ok(());
+        } // or log error
+    };
 
     for (school_id, school) in data.school_data {
         let shard = get_or_create_shard(&school_id);
@@ -373,11 +399,7 @@ pub fn load_all(base_path: &str) -> Result<()> {
             }
         }
 
-        // ✅ STEP 1: swap indices (independent lifecycle — fine)
-        *shard.student_index.write().unwrap() = student_idx;
-        *shard.teacher_index.write().unwrap() = teacher_idx;
-
-        // ✅ STEP 2: SINGLE ATOMIC DATA SWAP (this is the real fix)
+        // ✅ STEP 1: SINGLE ATOMIC DATA SWAP (this is the real fix)
         {
             let mut d = shard.data.write().unwrap();
 
@@ -386,6 +408,10 @@ pub fn load_all(base_path: &str) -> Result<()> {
             d.metadata_full = metadata_full;
             d.next_id = local_max_id + 1;
         }
+
+        // ✅ STEP 2: swap indices (independent lifecycle — fine)
+        *shard.student_index.write().unwrap() = student_idx;
+        *shard.teacher_index.write().unwrap() = teacher_idx;
     }
 
     Ok(())
@@ -510,25 +536,35 @@ pub fn batch_search(
     let shard = get_or_create_shard(school_id);
     let is_teacher = role.eq_ignore_ascii_case("teacher");
 
-    // 🔹 Phase 1: read all data under single snapshot
-    let d = shard.data.read().unwrap();
-    let idx = if is_teacher {
-        shard.teacher_index.read().unwrap()
-    } else {
-        shard.student_index.read().unwrap()
-    };
+    // Phase 1: collect raw HNSW results, release index lock
+    let raw_per_query: Vec<Vec<(usize, f32)>> = {
+        let idx = if is_teacher {
+            shard.teacher_index.read().unwrap()
+        } else {
+            shard.student_index.read().unwrap()
+        };
+        embeddings
+            .iter()
+            .map(|emb| {
+                idx.search(&emb[..], k * 3, 200)
+                    .into_iter()
+                    .map(|n| (n.d_id, 1.0 - n.distance))
+                    .collect()
+            })
+            .collect()
+    }; // index lock drops here
 
-    embeddings
-        .iter()
-        .map(|emb| {
-            idx.search(&emb[..], k * 3, 200)
-                .into_iter()
-                .find_map(|n| {
-                    // ✅ safe access, consistent
-                    d.metadata_hot.get(n.d_id).and_then(|m| {
-                        if !m.deleted { Some((n.d_id, 1.0 - n.distance)) } else { None }
-                    })
-                })
+    // Phase 2: validate against data — single read lock
+    let d = shard.data.read().unwrap();
+    raw_per_query
+        .into_iter()
+        .map(|candidates| {
+            candidates.into_iter().find_map(|(id, score)| {
+                d.metadata_hot
+                    .get(id)
+                    .filter(|m| !m.deleted)
+                    .map(|_| (id, score))
+            })
         })
         .collect()
 }
@@ -539,42 +575,47 @@ pub fn rebuild_index_if_needed(school_id: &str) {
     }
 
     const DELETE_THRESHOLD: usize = 50;
-
     let shard = get_or_create_shard(school_id);
 
-    // 🔹 check and reset delete count
-    {
-        let mut dc = shard.delete_count.lock().unwrap();
-        if *dc < DELETE_THRESHOLD {
-            return;
-        }
-        *dc = 0;
+    // compare_exchange: only one thread resets and proceeds to rebuild
+    // others see the old value and return early
+    let current = shard.delete_count.load(Ordering::Relaxed);
+    if current < DELETE_THRESHOLD {
+        return;
     }
 
-    // 🔹 snapshot current data
-    let d = shard.data.read().unwrap();
-    let meta = d.metadata_hot.clone();
-    let em = d.embeddings.clone();
+    // Only one thread wins this race — the rest bail
+    if
+        shard.delete_count
+            .compare_exchange(current, 0, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+    {
+        return; // another thread already triggered rebuild
+    }
 
-    // 🔹 rebuild HNSW indices
-    let mut new_student_idx = Hnsw::new(16, 50_000, 100, 50, DistCosine);
-    let mut new_teacher_idx = Hnsw::new(16, 5_000, 100, 50, DistCosine);
+    // snapshot — release data lock before building new indices
+    let (meta, em) = {
+        let d = shard.data.read().unwrap();
+        (d.metadata_hot.clone(), d.embeddings.clone())
+    };
+
+    let mut new_s = Hnsw::new(16, 50_000, 100, 50, DistCosine);
+    let mut new_t = Hnsw::new(16, 5_000, 100, 50, DistCosine);
 
     for (id, m) in meta.iter().enumerate() {
         if m.deleted {
             continue;
         }
-
         let e = &em[id];
-
         if m.role == 1 {
-            new_teacher_idx.insert((&e[..], id));
+            new_t.insert((&e[..], id));
         } else {
-            new_student_idx.insert((&e[..], id));
+            new_s.insert((&e[..], id));
         }
     }
 
-    // 🔹 swap indices atomically
-    *shard.student_index.write().unwrap() = new_student_idx;
-    *shard.teacher_index.write().unwrap() = new_teacher_idx;
+    *shard.student_index.write().unwrap() = new_s;
+    *shard.teacher_index.write().unwrap() = new_t;
 }
+
+

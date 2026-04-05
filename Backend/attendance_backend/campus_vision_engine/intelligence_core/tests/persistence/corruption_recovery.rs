@@ -8,12 +8,51 @@ use rand::rngs::StdRng;
 use tempfile::tempdir;
 
 use intelligence_core::embeddings::*;
+use std::fs;
+
+fn w() { unsafe { std::env::set_var("FACE_DB_ROLE", "writer"); } }
+
+#[test]
+fn corrupted_file_returns_ok_not_panic() {
+    w();
+    let path = "./test_persist_corrupt";
+    let _ = fs::remove_dir_all(path);
+    fs::create_dir_all(path).unwrap();
+    fs::write(format!("{}/data.bin", path), b"not valid bincode").unwrap();
+
+    // your load_all silently returns Ok(()) on deserialize error
+    // this test confirms it doesn't panic
+    let result = load_all(path);
+    assert!(result.is_ok(), "corrupted file should not panic: {:?}", result);
+
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn missing_file_returns_ok() {
+    w();
+    // non-existent path — must return Ok silently
+    let result = load_all("./definitely_does_not_exist_12345");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn empty_dir_returns_ok() {
+    w();
+    let path = "./test_persist_empty_dir";
+    let _ = fs::remove_dir_all(path);
+    fs::create_dir_all(path).unwrap();
+    // directory exists but no data.bin
+    let result = load_all(path);
+    assert!(result.is_ok());
+    let _ = fs::remove_dir_all(path);
+}
 
 #[test]
 fn corrupted_file_should_not_kill_system() {
-    unsafe {
-        std::env::set_var("FACE_DB_ROLE", "writer");
-    }
+    w();
+
+    clear_all(); // ✅
 
     let dir = tempdir().unwrap();
     let base = dir.path().to_str().unwrap();
@@ -33,6 +72,9 @@ fn corrupted_file_should_not_kill_system() {
 
     save_all(base).unwrap();
 
+    // 🔥 simulate restart
+    clear_all();
+
     // corrupt file
     let file_path = dir.path().join("data.bin");
     let mut f = OpenOptions::new().write(true).open(&file_path).unwrap();
@@ -41,7 +83,13 @@ fn corrupted_file_should_not_kill_system() {
     // must not panic
     let _ = load_all(base);
 
-    let res = search_in_role("school", &(0..128).map(|_| 0.5).collect::<Vec<_>>(), "student", 5);
+    // system should still be usable
+    let res = search_in_role(
+        "school",
+        &(0..128).map(|_| 0.5).collect::<Vec<_>>(),
+        "student",
+        5
+    );
 
     assert!(res.len() <= 5);
 }

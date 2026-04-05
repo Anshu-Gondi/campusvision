@@ -49,13 +49,20 @@ pub fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
         .iter()
         .map(|x| x * x)
         .sum::<f32>();
-    let denom = (norm_a_sq.sqrt() * norm_b_sq.sqrt()).max(1e-8);
+
+    // ✅ floor each norm separately
+    let denom = norm_a_sq.sqrt().max(1e-8) * norm_b_sq.sqrt().max(1e-8);
     dot / denom
 }
 
 #[inline]
 pub fn normalize(v: &mut [f32]) {
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
+    let norm = v
+        .iter()
+        .map(|x| x * x)
+        .sum::<f32>()
+        .sqrt()
+        .max(1e-8);
     for x in v {
         *x /= norm;
     }
@@ -64,44 +71,48 @@ pub fn normalize(v: &mut [f32]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn cosine_similarity_sse41(a: &[f32], b: &[f32]) -> f32 {
-    use std::arch::x86_64::*;
-
     let len = a.len();
     let mut i = 0;
 
-    let mut dot = 0.0;
-    let mut norm_a = 0.0;
-    let mut norm_b = 0.0;
+    let mut vdot    = _mm_setzero_ps();
+    let mut vnorm_a = _mm_setzero_ps();
+    let mut vnorm_b = _mm_setzero_ps();
 
-    // process 4 floats at a time
     while i + 4 <= len {
         let va = _mm_loadu_ps(a.as_ptr().add(i));
         let vb = _mm_loadu_ps(b.as_ptr().add(i));
-
-        // dot product (all lanes)
-        let dp = _mm_dp_ps(va, vb, 0xFF);
-        dot += _mm_cvtss_f32(dp);
-
-        // norms
-        let na = _mm_dp_ps(va, va, 0xFF);
-        let nb = _mm_dp_ps(vb, vb, 0xFF);
-
-        norm_a += _mm_cvtss_f32(na);
-        norm_b += _mm_cvtss_f32(nb);
-
+        vdot    = _mm_add_ps(vdot,    _mm_mul_ps(va, vb));
+        vnorm_a = _mm_add_ps(vnorm_a, _mm_mul_ps(va, va));
+        vnorm_b = _mm_add_ps(vnorm_b, _mm_mul_ps(vb, vb));
         i += 4;
     }
 
-    // tail (remaining elements)
+    let mut dot    = hsum_sse(vdot);
+    let mut norm_a = hsum_sse(vnorm_a);
+    let mut norm_b = hsum_sse(vnorm_b);
+
     while i < len {
-        dot += a[i] * b[i];
+        dot    += a[i] * b[i];
         norm_a += a[i] * a[i];
         norm_b += b[i] * b[i];
         i += 1;
     }
 
-    let denom = (norm_a.sqrt() * norm_b.sqrt()).max(1e-8);
+    // ✅ floor each norm BEFORE multiplying — not the product
+    let denom = norm_a.sqrt().max(1e-8) * norm_b.sqrt().max(1e-8);
     dot / denom
+}
+
+// horizontal sum of 4 f32 lanes into one f32
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[inline]
+unsafe fn hsum_sse(v: __m128) -> f32 {
+    // _mm_hadd_ps adds adjacent pairs: [a+b, c+d, a+b, c+d]
+    let shuf = _mm_hadd_ps(v, v);
+    // second hadd: [(a+b)+(c+d), ...] = full sum in lane 0
+    let sums = _mm_hadd_ps(shuf, shuf);
+    _mm_cvtss_f32(sums)
 }
 
 /// Compute IoU between two rectangles
@@ -119,4 +130,16 @@ pub fn iou(a: &Rect, b: &Rect) -> f32 {
     let union = a.area() + b.area() - inter;
 
     (inter as f32) / (union as f32)
+}
+
+// test helpers
+pub fn scalar_norm(a: &[f32]) -> f32 {
+    a.iter()
+        .map(|x| x * x)
+        .sum::<f32>()
+        .sqrt()
+}
+
+pub fn make_vec(seed: f32, len: usize) -> Vec<f32> {
+    (0..len).map(|i| ((i as f32) * seed + 0.1).sin()).collect()
 }
