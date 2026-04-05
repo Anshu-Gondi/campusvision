@@ -76,28 +76,19 @@ function RegisterOrganization() {
         </button>
       </form>
 
-      {/* ✅ SINGLE CLEAN SUCCESS BLOCK */}
       {result?.default_admin_password && (
         <article className="message is-warning mt-4">
           <div className="message-header">
             <p>Admin Access Created</p>
           </div>
-
           <div className="message-body">
             <p><strong>Default Admin Password:</strong></p>
-
-            <h2 className="title is-4">
-              {result.default_admin_password}
-            </h2>
-
+            <h2 className="title is-4">{result.default_admin_password}</h2>
             <p>⚠ Save this now. You must change it after login.</p>
 
-            {/* 👉 Navigation */}
+            {/* 👉 ADD THIS */}
             <div className="mt-4">
-              <Link
-                to="/admin-access"
-                className="button is-success is-fullwidth"
-              >
+              <Link to="/admin-access" className="button is-success is-fullwidth mt-4">
                 Go to Admin Login
               </Link>
             </div>
