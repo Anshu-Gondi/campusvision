@@ -6,7 +6,9 @@ from datetime import datetime
 from django.utils.timezone import now, timedelta
 from django.core.exceptions import ValidationError
 from django.db.models.signals import post_delete, pre_save
+from django.contrib.auth.models import User
 from django.dispatch import receiver
+from .utils.crypto import decrypt_value, encrypt_value
 
 # ----------------- Organization (School / College) -----------------
 
@@ -80,6 +82,9 @@ class Student(models.Model):
 
     image = models.ImageField(upload_to="students/", null=True, blank=True)
 
+    is_active = models.BooleanField(default=True)
+    enrolled_until = models.DateField(null=True, blank=True)
+
     class Meta:
         unique_together = ("branch", "roll_no")
         indexes = [
@@ -94,6 +99,11 @@ class Student(models.Model):
 
 # ----------------- Teacher -----------------
 class Teacher(models.Model):
+    user   = models.OneToOneField(
+                User, on_delete=models.SET_NULL,
+                null=True, blank=True,
+                related_name="teacher"
+             )
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE, db_index=True)
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True
@@ -201,8 +211,8 @@ class Attendance(models.Model):
         null=True,
         blank=True
     )
-    date = models.DateField(default=datetime.now)
-    time = models.TimeField(default=datetime.now)
+    date   = models.DateField(auto_now_add=True)
+    time   = models.TimeField(auto_now_add=True)
     status = models.CharField(max_length=10, choices=[
                               ("Present", "Present"), ("Absent", "Absent")])
 
@@ -213,12 +223,18 @@ class Attendance(models.Model):
             )
 
     class Meta:
-        unique_together = (
-            "branch",
-            "student",
-            "teacher",
-            "date",
-        )
+        constraints = [
+            models.UniqueConstraint(
+                fields=["branch", "student", "date"],
+                condition=models.Q(student__isnull=False),
+                name="unique_student_attendance_per_day"
+            ),
+            models.UniqueConstraint(
+                fields=["branch", "teacher", "date"],
+                condition=models.Q(teacher__isnull=False),
+                name="unique_teacher_attendance_per_day"
+            ),
+        ]
 
     def __str__(self):
         if self.student:
@@ -230,15 +246,13 @@ class Attendance(models.Model):
 
 # ----------------- QR CODE SESSION -----------------
 class QRSession(models.Model):
-    branch = models.ForeignKey(
-        Branch, on_delete=models.CASCADE, null=True, blank=True)
-    code = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField(null=True, blank=True)
-    grace_seconds = 5  # allow overlap scanning
-    used = models.BooleanField(default=False)  # <-- NEW
-    # student roll_no or teacher id
-    scanned_by = models.CharField(max_length=100, null=True, blank=True)
+    branch      = models.ForeignKey(Branch, on_delete=models.CASCADE, null=True, blank=True)
+    code        = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at  = models.DateTimeField(auto_now_add=True)
+    expires_at  = models.DateTimeField(null=True, blank=True)
+    grace_seconds = models.PositiveIntegerField(default=5)  # ← field not class attr
+    used        = models.BooleanField(default=False)
+    scanned_by  = models.CharField(max_length=100, null=True, blank=True)
 
     def save(self, *args, **kwargs):
         if not self.expires_at:
@@ -258,14 +272,40 @@ class QRSession(models.Model):
 
 class Camera(models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+
     name = models.CharField(max_length=100)
-    url = models.CharField(max_length=500)
+
+    port = models.IntegerField(default=554)  # RTSP default
+
+    ip_address = models.GenericIPAddressField()
+    username = models.CharField(max_length=100)
+    password_encrypted = models.TextField()
+    
     floor = models.CharField(max_length=50, null=True, blank=True)
     room = models.CharField(max_length=50, null=True, blank=True)
-    active = models.BooleanField(default=True)
-    role = models.CharField(max_length=10, choices=[(
-        "student", "Student"), ("teacher", "Teacher")], default="student")
 
+    stream_path = models.CharField(
+        max_length=200,
+        default="/stream1"
+    )
+
+    active = models.BooleanField(default=True)
+
+    role = models.CharField(
+        max_length=10,
+        choices=[("student", "Student"), ("teacher", "Teacher")],
+        default="student"
+    )
+
+    def set_password(self, raw_password):
+        self.password_encrypted = encrypt_value(raw_password)
+
+    def get_password(self):
+        return decrypt_value(self.password_encrypted) # NOT plain password
+    
+    def get_rtsp_url(self):
+        # decrypt password here
+        return f"rtsp://{self.username}:{self.get_password()}@{self.ip_address}:{self.port}{self.stream_path}"
 
 class CameraMatch(models.Model):
     branch = models.ForeignKey(
@@ -375,65 +415,6 @@ class FaceRejectionLog(models.Model):
 
     def __str__(self):
         return f"{self.role} | {self.reason} | {self.created_at}"
-
-
-def backfill_branch(apps, schema_editor):
-    FaceImage = apps.get_model('your_app', 'FaceImage')
-    CameraMatch = apps.get_model('your_app', 'CameraMatch')
-    FaceRejectionLog = apps.get_model('your_app', 'FaceRejectionLog')
-    QRSession = apps.get_model('your_app', 'QRSession')
-    Student = apps.get_model('your_app', 'Student')
-    Teacher = apps.get_model('your_app', 'Teacher')
-    Branch = apps.get_model('your_app', 'Branch')
-
-    default_branch = Branch.objects.first()  # fallback
-
-    # ---------- FaceImage ----------
-    for img in FaceImage.objects.filter(branch__isnull=True):
-        branch = None
-        if img.person_type == 'student':
-            student = Student.objects.filter(roll_no=img.person_id).first()
-            branch = student.branch if student else default_branch
-        elif img.person_type == 'teacher':
-            teacher = Teacher.objects.filter(employee_id=img.person_id).first()
-            branch = teacher.branch if teacher else default_branch
-        img.branch = branch
-        img.save(update_fields=['branch'])
-
-    # ---------- CameraMatch ----------
-    for cam in CameraMatch.objects.filter(branch__isnull=True):
-        student = Student.objects.filter(roll_no=cam.person_id).first()
-        teacher = Teacher.objects.filter(employee_id=cam.person_id).first()
-        cam.branch = student.branch if student else (
-            teacher.branch if teacher else default_branch)
-        cam.save(update_fields=['branch'])
-
-    # ---------- FaceRejectionLog ----------
-    for log in FaceRejectionLog.objects.filter(branch__isnull=True):
-        student = Student.objects.filter(roll_no=log.person_id).first()
-        teacher = Teacher.objects.filter(employee_id=log.person_id).first()
-        log.branch = student.branch if student else (
-            teacher.branch if teacher else default_branch)
-        log.save(update_fields=['branch'])
-
-    # ---------- QRSession ----------
-    for qr in QRSession.objects.filter(branch__isnull=True):
-        # try scanned_by first
-        student = Student.objects.filter(roll_no=qr.scanned_by).first()
-        teacher = Teacher.objects.filter(employee_id=qr.scanned_by).first()
-        qr.branch = student.branch if student else (
-            teacher.branch if teacher else default_branch)
-        qr.save(update_fields=['branch'])
-
-
-class Migration(migrations.Migration):
-    dependencies = [
-        ('your_app', 'previous_migration_name'),
-    ]
-
-    operations = [
-        migrations.RunPython(backfill_branch),
-    ]
 
 
 # Delete old image file on update
