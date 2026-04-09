@@ -152,8 +152,9 @@ pub async fn detect_and_embed_rust(
     ).await
 }
 
-pub async fn detect_and_add_person_rust(
+pub async fn detect_and_enroll_person_rust(
     state: Arc<AppState>,
+    school_id: String,
     image_bytes: Vec<u8>,
     name: String,
     person_id: u64,
@@ -162,27 +163,69 @@ pub async fn detect_and_add_person_rust(
     layout: Option<String>,
 ) -> Result<usize> {
 
+    // ─────────────────────────────
+    // 1️⃣ VALIDATION
+    // ─────────────────────────────
     if !["student", "teacher"].contains(&role.as_str()) {
         anyhow::bail!("role must be 'student' or 'teacher'");
     }
 
+    // ─────────────────────────────
+    // 2️⃣ DETECT + EMBED
+    // ─────────────────────────────
     let result = detect_and_embed_rust(
-        state,
+        state.clone(),
         image_bytes,
         layout,
-        true,
+        true, // enrollment mode
     ).await?;
 
-    let embedding =
-        result.embedding.ok_or_else(|| anyhow!("Embedding missing"))?;
+    let embedding = result
+        .embedding
+        .ok_or_else(|| anyhow!("No valid face detected"))?;
 
+    // ─────────────────────────────
+    // 3️⃣ DUPLICATE CHECK (CRITICAL)
+    // ─────────────────────────────
+    let dup = crate::face_db::check_duplicate_rust(
+        &school_id,
+        &embedding,
+        &role,
+        0.75, // ⚠️ tune this
+    );
+
+    if dup.duplicate {
+        return Err(anyhow!(
+            "Duplicate face detected: {:?} (similarity {:.3})",
+            dup.name,
+            dup.similarity.unwrap_or(0.0)
+        ));
+    }
+
+    // ─────────────────────────────
+    // 4️⃣ ADD TO EMBEDDINGS (MULTI-TENANT)
+    // ─────────────────────────────
     let id = embeddings::add_face_embedding(
+        &school_id,          // ✅ NEW (CRITICAL)
         embedding,
         name,
         person_id,
         roll_no,
         role,
     )?;
+
+    // ─────────────────────────────
+    // 5️⃣ OPTIONAL: TRIGGER BACKUP (ASYNC)
+    // ─────────────────────────────
+    let state_clone = state.clone();
+    let school_id_clone = school_id.clone();
+
+    tokio::spawn(async move {
+        let _ = state_clone
+            .face_db_backup
+            .save(&school_id_clone, "face_db")
+            .await;
+    });
 
     Ok(id)
 }

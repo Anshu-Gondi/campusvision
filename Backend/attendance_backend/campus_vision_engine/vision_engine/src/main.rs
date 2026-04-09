@@ -18,8 +18,23 @@ use crate::app::AppState;
 use crate::vision::routes::face_routes;
 use crate::scheduler::routes::scheduler_routes;
 
-// ── CCTV Router ─────────────────────────────────────────
+use std::env;
+use std::path::PathBuf;
 
+/// Prepend the build OUT_DIR (where DLLs are copied) to PATH
+fn setup_opencv_path() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    let path_var = env::var("PATH").unwrap_or_default();
+    let new_path = format!("{};{}", out_dir.display(), path_var);
+    unsafe {
+        env::set_var("PATH", new_path);
+    }
+
+    println!("✅ OpenCV DLLs path added: {}", out_dir.display());
+}
+
+// ── CCTV Router ─────────────────────────────────────────
 pub fn cctv_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/cctv/process-frame", post(process_frame_route))
@@ -32,14 +47,19 @@ pub fn cctv_router() -> Router<Arc<AppState>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    std::panic::set_hook(Box::new(|panic_info| {
-        println!("🔥 PANIC OCCURRED: {:?}", panic_info);
-    }));
+    setup_opencv_path();
+
+    std::panic::set_hook(
+        Box::new(|panic_info| {
+            println!("🔥 PANIC OCCURRED: {:?}", panic_info);
+        })
+    );
 
     dotenvy::dotenv().ok();
 
-    CryptoProvider::install_default(aws_lc_rs::default_provider())
-        .expect("Failed to install aws-lc-rs crypto provider");
+    CryptoProvider::install_default(aws_lc_rs::default_provider()).expect(
+        "Failed to install aws-lc-rs crypto provider"
+    );
 
     tracing_subscriber::fmt::init();
 
@@ -51,7 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(cctv_router())
         .merge(face_routes())
         .merge(scheduler_routes())
-        .route("/health", get(|| async { "ok" }))
+        .route(
+            "/health",
+            get(|| async { "ok" })
+        )
         .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -63,9 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = axum::serve(listener, app.into_make_service());
 
     let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for shutdown");
+        tokio::signal::ctrl_c().await.expect("Failed to listen for shutdown");
     };
 
     tokio::select! {

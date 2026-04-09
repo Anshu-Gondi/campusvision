@@ -1,57 +1,50 @@
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Script};
+use anyhow::Result;
 
 #[derive(Clone)]
 pub struct SecurityService {
     max_requests: u32,
-    window_secs: usize,
+    window_secs: i64,
+    max_face_attempts: u32,
 }
 
 impl SecurityService {
     pub fn new() -> Self {
         Self {
             max_requests: 10,
-            window_secs: 10, // 10 sec window
+            window_secs: 10,
+            max_face_attempts: 5,
         }
     }
 
-    /// Generic rate limit (API abuse)
-    pub async fn allow_request(
-        &self,
-        redis: &mut redis::aio::MultiplexedConnection,
-        key: &str,
-    ) -> bool {
+    async fn run_lua(&self, redis: &mut redis::aio::MultiplexedConnection, key: &str, window: i64) -> u32 {
+        let script = Script::new(r#"
+            local count = redis.call('INCR', KEYS[1])
+            if count == 1 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
+            end
+            return count
+        "#);
+
+        script.key(key).arg(window).invoke_async(redis).await.unwrap_or(0)
+    }
+
+    pub async fn allow_request(&self, redis: &mut redis::aio::MultiplexedConnection, key: &str) -> bool {
         let redis_key = format!("rate:{}", key);
-
-        let count: u32 = redis
-            .incr(&redis_key, 1)
-            .await
-            .unwrap_or(self.max_requests + 1);
-
-        if count == 1 {
-            let _: () = redis
-                .expire(&redis_key, self.window_secs.try_into().unwrap())
-                .await
-                .unwrap_or(());
-        }
-
-        count <= self.max_requests
+        self.run_lua(redis, &redis_key, self.window_secs).await <= self.max_requests
     }
 
-    /// Prevent brute-force face attempts
-    pub async fn validate_attempt(
-        &self,
-        redis: &mut redis::aio::MultiplexedConnection,
-        user_id: &str,
-    ) -> Result<(), String> {
+    pub async fn allow_camera_frame(&self, redis: &mut redis::aio::MultiplexedConnection, camera_id: &str) -> bool {
+        let key = format!("rate:cam:{}", camera_id);
+        self.run_lua(redis, &key, 1).await <= 30
+    }
+
+    pub async fn validate_attempt(&self, redis: &mut redis::aio::MultiplexedConnection, user_id: &str) -> Result<(), String> {
         let key = format!("attempt:{}", user_id);
-        let attempts: u32 = redis.incr(&key, 1).await.unwrap_or(5);
+        let attempts = self.run_lua(redis, &key, 60).await;
 
-        if attempts == 1 {
-            let _: () = redis.expire(&key, 60).await.unwrap_or(()); // 1 min
-        }
-
-        if attempts > 5 {
-            return Err("Too many verification attempts".into());
+        if attempts > self.max_face_attempts {
+            return Err("Too many verification attempts. Try again in 60 seconds.".to_string());
         }
 
         Ok(())

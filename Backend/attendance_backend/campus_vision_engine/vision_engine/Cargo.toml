@@ -37,7 +37,7 @@ intelligence_core = { path = "../intelligence_core" }
 ndarray = { workspace = true }
 
 redis = { version = "1.0.3", features = ["aio", "tokio-rustls-comp"]}
-ureq = { version = "2.1", features = ["json"] }
+reqwest = { version = "0.12", features = ["json"] }
 
 dotenvy = "0.15"
 
@@ -45,3 +45,4 @@ aws-sdk-s3 = "1"
 aws-config = "1"
 rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
 num_cpus = "1.17.0"
+log = "0.4.29"

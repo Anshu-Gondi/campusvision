@@ -1,35 +1,48 @@
 use redis::AsyncCommands;
+use anyhow::Result;
 
 #[derive(Clone)]
 pub struct AttendanceService {
-    ttl_secs: usize,
+    ttl_secs: u64,
 }
 
 impl AttendanceService {
     pub fn new() -> Self {
-        Self {
-            ttl_secs: 30 * 60, // 30 minutes
-        }
+        let ttl = std::env::var("ATTENDANCE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1800); // 30 min default
+        Self { ttl_secs: ttl }
+    }
+
+    fn key(branch_id: &str, person_id: &str) -> String {
+        format!("attendance:{}:{}", branch_id, person_id)
     }
 
     pub async fn is_recent(
         &self,
         redis: &mut redis::aio::MultiplexedConnection,
-        user_id: &str,
+        branch_id: &str,
+        person_id: &str,
     ) -> bool {
-        let key = format!("attendance:{}", user_id);
-        redis.exists(key).await.unwrap_or(false)
+        match redis.exists(Self::key(branch_id, person_id)).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                log::warn!("Redis check failed for {}:{} — {}", branch_id, person_id, e);
+                false // fail open
+            }
+        }
     }
 
     pub async fn mark(
         &self,
         redis: &mut redis::aio::MultiplexedConnection,
-        user_id: &str,
-    ) {
-        let key = format!("attendance:{}", user_id);
-        let _: () = redis
-            .set_ex(key, "1", self.ttl_secs as u64)
+        branch_id: &str,
+        person_id: &str,
+    ) -> Result<()> {
+        redis
+            .set_ex(Self::key(branch_id, person_id), "1", self.ttl_secs)
             .await
-            .unwrap_or(());
+            .map_err(|e| anyhow::anyhow!("Redis mark failed: {}", e))
     }
 }

@@ -10,15 +10,22 @@ pub struct DuplicateCheckResult {
 }
 
 pub fn check_duplicate_rust(
+    school_id: &str,
     embedding: &[f32],
     role: &str,
     threshold: f32,
 ) -> DuplicateCheckResult {
-    let results = embeddings::search_in_role(embedding, role, 1);
+
+    let results = embeddings::search_in_role(
+        school_id,
+        embedding,
+        role,
+        1
+    );
 
     if let Some((id, sim)) = results.first() {
         if *sim >= threshold {
-            if let Some(meta) = embeddings::get_metadata(*id) {
+            if let Some(meta) = embeddings::get_metadata(school_id, *id) {
                 return DuplicateCheckResult {
                     duplicate: true,
                     matched_id: Some(*id),
@@ -39,18 +46,26 @@ pub fn check_duplicate_rust(
     }
 }
 
-pub fn get_face_info_rust(id: usize) -> Option<(usize, String, String, String)> {
-    embeddings::get_metadata(id).map(|meta| {
+pub fn get_face_info_rust(
+    school_id: &str,
+    id: usize
+) -> Option<(usize, String, String, String)> {
+
+    embeddings::get_metadata(school_id, id).map(|meta| {
         (id, meta.name.clone(), meta.roll_no.clone(), meta.role.clone())
     })
 }
 
-pub fn count_students_rust() -> usize {
-    embeddings::count_by_role("student")
+pub fn count_students_rust(school_id: &str) -> usize {
+    embeddings::count_by_role(school_id, "student")
 }
 
-pub fn count_teachers_rust() -> usize {
-    embeddings::count_by_role("teacher")
+pub fn count_teachers_rust(school_id: &str) -> usize {
+    embeddings::count_by_role(school_id, "teacher")
+}
+
+pub fn total_registered_rust(school_id: &str) -> usize {
+    embeddings::get_total_faces(school_id)
 }
 
 pub fn save_database_rust(path: &str) -> anyhow::Result<()> {
@@ -60,14 +75,5 @@ pub fn save_database_rust(path: &str) -> anyhow::Result<()> {
 
 pub fn load_database_rust(path: &str) -> anyhow::Result<()> {
     embeddings::load_all(path)?;
-    Ok(())
-}
-
-pub fn total_registered_rust() -> usize {
-    embeddings::get_total_faces()
-}
-
-pub fn init_database_rust() -> anyhow::Result<()> {
-    embeddings::init_empty_database()?;
     Ok(())
 }

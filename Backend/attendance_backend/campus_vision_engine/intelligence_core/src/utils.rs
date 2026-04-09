@@ -70,7 +70,7 @@ pub fn normalize(v: &mut [f32]) {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn cosine_similarity_sse41(a: &[f32], b: &[f32]) -> f32 {
+unsafe fn cosine_similarity_sse41(a: &[f32], b: &[f32]) -> f32 { unsafe {
     let len = a.len();
     let mut i = 0;
 
@@ -101,7 +101,7 @@ unsafe fn cosine_similarity_sse41(a: &[f32], b: &[f32]) -> f32 {
     // ✅ floor each norm BEFORE multiplying — not the product
     let denom = norm_a.sqrt().max(1e-8) * norm_b.sqrt().max(1e-8);
     dot / denom
-}
+}}
 
 // horizontal sum of 4 f32 lanes into one f32
 #[cfg(target_arch = "x86_64")]

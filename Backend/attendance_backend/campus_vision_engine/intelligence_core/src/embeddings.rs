@@ -333,8 +333,8 @@ pub fn load_all(base_path: &str) -> Result<()> {
         let mut local_max_id = 0;
 
         // 🔹 RESET indices
-        let mut student_idx = Hnsw::new(16, 50_000, 100, 50, DistCosine);
-        let mut teacher_idx = Hnsw::new(16, 5_000, 100, 50, DistCosine);
+        let student_idx = Hnsw::new(16, 50_000, 100, 50, DistCosine);
+        let teacher_idx = Hnsw::new(16, 5_000, 100, 50, DistCosine);
 
         // 🔹 prepare vectors
         let mut embeddings: Vec<Vec<f32>> = Vec::new();
@@ -599,8 +599,8 @@ pub fn rebuild_index_if_needed(school_id: &str) {
         (d.metadata_hot.clone(), d.embeddings.clone())
     };
 
-    let mut new_s = Hnsw::new(16, 50_000, 100, 50, DistCosine);
-    let mut new_t = Hnsw::new(16, 5_000, 100, 50, DistCosine);
+    let new_s = Hnsw::new(16, 50_000, 100, 50, DistCosine);
+    let new_t = Hnsw::new(16, 5_000, 100, 50, DistCosine);
 
     for (id, m) in meta.iter().enumerate() {
         if m.deleted {
