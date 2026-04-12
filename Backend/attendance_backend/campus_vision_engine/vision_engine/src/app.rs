@@ -29,7 +29,7 @@ impl AppState {
         // ─────────────────────────────
         // 🔁 REDIS WITH RETRY
         // ─────────────────────────────
-        let redis = retry_async(
+        let redis = Self::retry_async(
             || async {
                 let redis_url = std::env::var("REDIS_URL").map_err(|e| anyhow::anyhow!(e))?;
 
@@ -48,7 +48,7 @@ impl AppState {
         // ─────────────────────────────
         // 🔁 MINIO WITH RETRY
         // ─────────────────────────────
-        let face_db_backup = retry_async(
+        let face_db_backup = Self::retry_async(
             || async { MinioFaceDb::new().await.map_err(|e| anyhow::anyhow!(e)) },
             5,
             500

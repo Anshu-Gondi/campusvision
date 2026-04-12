@@ -20,7 +20,7 @@ impl Detector {
 
         for bytes in frames {
             if
-                let Ok((mat, bbox, landmarks)) = crate::preprocessing::preprocess_image_dynamic(
+                let Ok((mat, bbox, landmarks, _)) = crate::preprocessing::preprocess_image_dynamic(
                     bytes,
                     None,
                     self.state.yunet_pool.clone()

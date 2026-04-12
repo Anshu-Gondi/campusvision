@@ -11,12 +11,13 @@ mod app;
 mod service;
 mod storage;
 mod face_db;
-mod scheduler;
+mod decision;
+mod quality;
+mod adaptive;
 
 use crate::cctv::routes::*;
 use crate::app::AppState;
 use crate::vision::routes::face_routes;
-use crate::scheduler::routes::scheduler_routes;
 
 use std::env;
 use std::path::PathBuf;
@@ -70,7 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .merge(cctv_router())
         .merge(face_routes())
-        .merge(scheduler_routes())
         .route(
             "/health",
             get(|| async { "ok" })

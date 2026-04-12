@@ -12,7 +12,7 @@ use crate::app::AppState;
 use intelligence_core::embeddings::add_face_embedding;
 
 use super::detect::detect_and_embed_rust;
-use super::index::{ search_person_rust, can_reenroll_rust };
+use super::index::{ search_person_rust };
 use super::recognition::{ verify_face_with_pool, detect_emotion_with_pool };
 
 // ── Shared API Error ─────────────────────────────────────────────────────
@@ -43,6 +43,21 @@ impl IntoResponse for ApiErr {
 
 // ── DTOs ────────────────────────────────────────────────────────────────
 
+#[derive(Deserialize)]
+pub struct LoadDbRequest {
+    pub school_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct InitDbRequest {
+    pub school_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct SaveDbRequest {
+    pub school_id: String,
+}
+
 #[derive(Serialize)]
 struct ApiResponse {
     success: bool,
@@ -65,6 +80,7 @@ pub struct DetectEmbedResponse {
 
 #[derive(Deserialize)]
 pub struct AddPersonRequest {
+    pub school_id: String,
     pub embedding: Vec<f32>,
     pub name: String,
     pub person_id: u64,
@@ -79,6 +95,7 @@ pub struct AddPersonResponse {
 
 #[derive(Deserialize)]
 pub struct SearchPersonRequest {
+    pub school_id: String,
     pub embedding: Vec<f32>,
     pub role: String,
     pub k: usize,
@@ -140,7 +157,7 @@ pub async fn detect_and_embed_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DetectEmbedRequest>
 ) -> ApiResult<DetectEmbedResponse> {
-    let mut redis = state.redis.lock().await;
+    let mut redis = state.redis.clone();
 
     if !state.security.allow_request(&mut redis, "detect_embed").await {
         return Err(ApiErr {
@@ -175,7 +192,7 @@ pub async fn detect_and_add_person_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AddPersonRequest>
 ) -> ApiResult<AddPersonResponse> {
-    let mut redis = state.redis.lock().await;
+    let mut redis = state.redis.clone();
 
     if !state.security.allow_request(&mut redis, "add_person").await {
         return Err(ApiErr {
@@ -185,6 +202,7 @@ pub async fn detect_and_add_person_handler(
     }
 
     let id = add_face_embedding(
+        &payload.school_id,
         payload.embedding,
         payload.name,
         payload.person_id,
@@ -202,7 +220,7 @@ pub async fn search_person_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SearchPersonRequest>
 ) -> ApiResult<SearchPersonResponse> {
-    let mut redis = state.redis.lock().await;
+    let mut redis = state.redis.clone();
 
     if !state.security.allow_request(&mut redis, "search_person").await {
         return Err(ApiErr {
@@ -211,37 +229,17 @@ pub async fn search_person_handler(
         });
     }
 
-    let results = search_person_rust(payload.embedding, payload.role, payload.k).map_err(
-        |e| ApiErr {
-            status: StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        }
-    )?;
+    let results = search_person_rust(
+        &payload.school_id,
+        payload.embedding,
+        payload.role,
+        payload.k
+    ).map_err(|e| ApiErr {
+        status: StatusCode::BAD_REQUEST,
+        message: e.to_string(),
+    })?;
 
     Ok(Json(SearchPersonResponse { results }))
-}
-
-pub async fn can_reenroll_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<CanReenrollRequest>
-) -> ApiResult<CanReenrollResponse> {
-    let mut redis = state.redis.lock().await;
-
-    if !state.security.allow_request(&mut redis, "can_reenroll").await {
-        return Err(ApiErr {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: "Rate limit exceeded".into(),
-        });
-    }
-
-    let can = can_reenroll_rust(payload.embedding, payload.person_id, payload.role).map_err(
-        |e| ApiErr {
-            status: StatusCode::BAD_REQUEST,
-            message: e.to_string(),
-        }
-    )?;
-
-    Ok(Json(CanReenrollResponse { can }))
 }
 
 pub async fn verify_attendance_handler(
@@ -249,10 +247,11 @@ pub async fn verify_attendance_handler(
     Json(payload): Json<VerifyAttendanceRequest>
 ) -> ApiResult<VerifyAttendanceResponse> {
     let user_key = payload.user_id.to_string();
-    let mut redis = state.redis.lock().await;
+    let mut redis = state.redis.clone();
+    let person_id = payload.user_id.to_string();
 
     // 1️⃣ Already marked
-    if state.attendance.is_recent(&mut redis, &user_key).await {
+    if state.attendance.is_recent(&mut redis, &user_key, &person_id).await {
         return Ok(
             Json(VerifyAttendanceResponse {
                 status: "already_marked".into(),
@@ -270,9 +269,7 @@ pub async fn verify_attendance_handler(
     let django = state.django.clone();
     let key = user_key.clone();
 
-    let location_ok = tokio::task
-        ::spawn_blocking(move || { django.is_location_valid(&key) }).await
-        .unwrap_or(false);
+    let location_ok = django.is_location_valid(&key).await;
 
     if !location_ok {
         return Err(ApiErr {
@@ -282,7 +279,7 @@ pub async fn verify_attendance_handler(
     }
 
     // 4️⃣ Mark attendance
-    state.attendance.mark(&mut redis, &user_key).await;
+    let _ = state.attendance.mark(&mut redis, &user_key, &person_id).await;
 
     Ok(
         Json(VerifyAttendanceResponse {
@@ -296,7 +293,7 @@ pub async fn verify_face_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<VerifyFaceRequest>
 ) -> ApiResult<VerifyFaceResponse> {
-    let mut redis = state.redis.lock().await;
+    let redis = state.redis.clone();
 
     if !state.security.allow_request(&mut redis, "verify_face").await {
         return Err(ApiErr {
@@ -324,7 +321,7 @@ pub async fn detect_emotion_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DetectEmotionRequest>
 ) -> ApiResult<DetectEmotionResponse> {
-    let mut redis = state.redis.lock().await;
+    let mut redis = state.redis.clone();
 
     if !state.security.allow_request(&mut redis, "detect_emotion").await {
         return Err(ApiErr {
@@ -344,61 +341,70 @@ pub async fn detect_emotion_handler(
 }
 
 /// POST /face/save
-pub async fn save_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
+pub async fn save_face_db_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SaveDbRequest>,
+) -> impl IntoResponse {
 
-    match state.face_db_backup.save(&local_dir).await {
-        Ok(_) =>
-            (
-                StatusCode::OK,
-                Json(ApiResponse {
-                    success: true,
-                    message: "Face DB saved successfully".to_string(),
-                }),
-            ),
-        Err(e) =>
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse {
-                    success: false,
-                    message: format!("Failed to save DB: {}", e),
-                }),
-            ),
+    let local_dir = std::env::var("FACE_DB_PATH")
+        .unwrap_or_else(|_| "face_database".to_string());
+
+    match state.face_db_backup.save(&payload.school_id, &local_dir).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "Face DB saved successfully".to_string(),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Failed: {}", e),
+            }),
+        ),
     }
 }
 
 /// POST /face/init
-pub async fn init_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
+pub async fn init_face_db_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<InitDbRequest>,
+) -> impl IntoResponse {
+
+    let local_dir = std::env::var("FACE_DB_PATH")
+        .unwrap_or_else(|_| "face_database".to_string());
 
     if let Err(e) = std::fs::create_dir_all(&local_dir) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to create DB dir: {e}"),
+                message: format!("Dir error: {e}"),
             }),
         );
     }
 
-    // initialize empty in-memory DB
-    if let Err(e) = crate::face_db::init_database_rust() {
+    if let Err(e) = crate::face_db::init_database_rust(&local_dir) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to init DB: {e}"),
+                message: format!("Init failed: {e}"),
             }),
         );
     }
 
-    // persist + backup
-    if let Err(e) = state.face_db_backup.save(&local_dir).await {
+    if let Err(e) = state.face_db_backup
+        .save(&payload.school_id, &local_dir)
+        .await
+    {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse {
                 success: false,
-                message: format!("DB initialized but backup failed: {e}"),
+                message: format!("Backup failed: {e}"),
             }),
         );
     }
@@ -407,32 +413,35 @@ pub async fn init_face_db_handler(State(state): State<Arc<AppState>>) -> impl In
         StatusCode::OK,
         Json(ApiResponse {
             success: true,
-            message: "Face DB initialized successfully".to_string(),
+            message: "Initialized".to_string(),
         }),
     )
 }
 
 /// POST /face/load
-pub async fn load_face_db_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let local_dir = std::env::var("FACE_DB_PATH").unwrap_or_else(|_| "face_database".to_string());
+pub async fn load_face_db_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<LoadDbRequest>,
+) -> impl IntoResponse {
 
-    match state.face_db_backup.load(&local_dir).await {
-        Ok(_) =>
-            (
-                StatusCode::OK,
-                Json(ApiResponse {
-                    success: true,
-                    message: "Face DB loaded successfully".to_string(),
-                }),
-            ),
-        Err(e) =>
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse {
-                    success: false,
-                    message: format!("Failed to load DB: {}", e),
-                }),
-            ),
+    let local_dir = std::env::var("FACE_DB_PATH")
+        .unwrap_or_else(|_| "face_database".to_string());
+
+    match state.face_db_backup.load(&payload.school_id, &local_dir).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "Face DB loaded successfully".to_string(),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Failed: {}", e),
+            }),
+        ),
     }
 }
 
@@ -451,7 +460,6 @@ pub fn face_routes() -> Router<Arc<AppState>> {
         .route("/face/detect-embed", post(detect_and_embed_handler))
         .route("/face/add-person", post(detect_and_add_person_handler))
         .route("/face/search", post(search_person_handler))
-        .route("/face/can-reenroll", post(can_reenroll_handler))
         .route("/face/verify", post(verify_face_handler))
         .route("/face/emotion", post(detect_emotion_handler))
         .route("/attendance/verify", post(verify_attendance_handler))

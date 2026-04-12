@@ -7,16 +7,19 @@ pub struct IdentityResolver;
 impl IdentityResolver {
 
     pub fn resolve(
+        school_id: &str,
         embedding: &Arc<Vec<f32>>,
     ) -> Option<(usize, f32)> {
 
         let student = batch_search(
+            school_id,
             std::slice::from_ref(embedding),
             "student",
             1
         );
 
         let teacher = batch_search(
+            school_id,
             std::slice::from_ref(embedding),
             "teacher",
             1

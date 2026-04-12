@@ -52,6 +52,7 @@ pub fn mat_to_array4_dynamic(mat: &opencv::core::Mat, layout: &str) -> Result<Ar
 }
 
 /// Verify face by comparing embedding similarity
+/// Verify face by comparing embedding similarity
 pub async fn verify_face_with_pool(
     state: Arc<AppState>,
     input_image: Vec<u8>,
@@ -61,8 +62,8 @@ pub async fn verify_face_with_pool(
 ) -> Result<f32> {
     let layout_str = layout.unwrap_or("NHWC");
 
-    // 1️⃣ Preprocess
-    let (face_mat, _, _) = preprocess_image_dynamic(
+    // 1️⃣ Preprocess (FIXED)
+    let (face_mat, _, _, _) = preprocess_image_dynamic(
         &input_image,
         model_input_size,
         state.yunet_pool.clone()
@@ -87,8 +88,8 @@ pub async fn detect_emotion_with_pool(
 ) -> Result<i64> {
     let layout_str = layout.unwrap_or("NHWC");
 
-    // 1️⃣ Preprocess
-    let (face_mat, _, _) = preprocess_image_dynamic(
+    // 1️⃣ Preprocess (FIXED)
+    let (face_mat, _, _, _) = preprocess_image_dynamic(
         &input_image,
         model_input_size,
         state.yunet_pool.clone()

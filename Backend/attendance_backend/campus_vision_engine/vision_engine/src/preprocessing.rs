@@ -17,12 +17,23 @@ pub async fn preprocess_image_dynamic(
     image_bytes: &[u8],
     model_input_size: Option<(usize, usize)>,
     yunet_pool: Arc<YuNetPool>
-) -> Result<(Mat, Rect, Vec<Point2f>)> {
+) -> Result<(Mat, Rect, Vec<Point2f>, Mat)> {
     // 1️⃣ Decode image
     let mut mat = imgcodecs::imdecode(&Vector::from_slice(image_bytes), imgcodecs::IMREAD_COLOR)?;
 
     if mat.empty() {
         return Err(anyhow!("Decoded image is empty"));
+    }
+
+    // Reject ultra small images (garbage input)
+    if mat.cols() < 100 || mat.rows() < 100 {
+        return Err(anyhow!("image_too_small"));
+    }
+
+    // Reject extreme aspect ratio (non-camera input)
+    let aspect = (mat.cols() as f32) / (mat.rows() as f32);
+    if aspect < 0.3 || aspect > 3.0 {
+        return Err(anyhow!("invalid_image_aspect"));
     }
 
     // 2️⃣ Only downscale EXTREME images (4K+)
@@ -45,6 +56,25 @@ pub async fn preprocess_image_dynamic(
         anyhow!("No face detected")
     )?;
 
+    let face_roi = Mat::roi(&mat, face_rect)?.try_clone()?;
+
+    // HARD FILTERS (cheap rejection before alignment)
+
+    if face_rect.width < 80 || face_rect.height < 80 {
+        return Err(anyhow!("face_too_small_hard"));
+    }
+
+    // aspect ratio check (reject extreme angles)
+    let aspect = (face_rect.width as f32) / (face_rect.height as f32);
+    if aspect < 0.5 || aspect > 1.8 {
+        return Err(anyhow!("bad_face_ratio"));
+    }
+
+    // bounding box inside image sanity
+    if face_rect.x < 0 || face_rect.y < 0 {
+        return Err(anyhow!("invalid_bbox"));
+    }
+
     // 4️⃣ Align face
     let aligned = align_face(
         &mat,
@@ -53,7 +83,7 @@ pub async fn preprocess_image_dynamic(
         model_input_size.map(|(h, w)| (w as i32, h as i32))
     )?;
 
-    Ok((aligned, face_rect, landmarks))
+    Ok((aligned, face_rect, landmarks, face_roi))
 }
 
 /// Select highest score face
@@ -71,7 +101,8 @@ pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {
         let w = *faces.at_2d::<f32>(row, 2)?;
         let h = *faces.at_2d::<f32>(row, 3)?;
 
-        let combined = score * (w * h);
+        let area = w * h;
+        let combined = score * area.sqrt(); // dampen size bias
 
         if combined > best_score {
             best_score = combined;
@@ -102,6 +133,12 @@ pub fn pick_best_face(faces: &Mat) -> Result<Option<(Rect, Vec<Point2f>)>> {
         let px = *faces.at_2d::<f32>(best_idx, col)?;
         let py = *faces.at_2d::<f32>(best_idx, col + 1)?;
         landmarks.push(Point2f::new(px, py));
+    }
+
+    // Reject extreme face shapes (profile / wrong detection)
+    let ratio = (w as f32) / (h as f32);
+    if ratio < 0.5 || ratio > 1.8 {
+        return Ok(None);
     }
 
     Ok(Some((bbox, landmarks)))
@@ -181,6 +218,8 @@ pub fn align_face(
     )?;
 
     if warp_mat.empty() {
+        // log this (important for debugging bad landmark cases)
+        eprintln!("WARN: affine transform failed, fallback resize used");
         let mut resized = Mat::default();
 
         imgproc::resize(

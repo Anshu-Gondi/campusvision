@@ -77,3 +77,16 @@ pub fn load_database_rust(path: &str) -> anyhow::Result<()> {
     embeddings::load_all(path)?;
     Ok(())
 }
+
+pub fn init_database_rust(base_path: &str) -> anyhow::Result<()> {
+    // 🔥 1. CLEAR MEMORY
+    intelligence_core::embeddings::clear_all();
+
+    // 🔥 2. CREATE EMPTY SNAPSHOT STRUCTURE
+    std::fs::create_dir_all(base_path)?;
+
+    // 🔥 3. FORCE SAVE (empty DB)
+    intelligence_core::embeddings::force_save_all(base_path)?;
+
+    Ok(())
+}
