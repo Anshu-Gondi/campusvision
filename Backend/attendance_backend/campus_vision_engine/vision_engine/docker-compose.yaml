@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+
+  vision_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "3000:3000"
+    environment:
+      # Redis
+      REDIS_URL: redis://redis:6379
+
+      # MinIO
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_NAME: face-db
+
+      # Django backend
+      DJANGO_BASE_URL: http://django:8000
+
+      # Attendance TTL (30 min)
+      ATTENDANCE_TTL_SECS: 1800
+
+      # Face DB
+      FACE_DB_ROLE: writer
+      FACE_DB_PATH: /app/face_db
+
+      # ORT — must match what's in the image
+      ORT_STRATEGY: system
+      ORT_DYLIB_PATH: /usr/lib/x86_64-linux-gnu/libonnxruntime.so
+
+      RUST_LOG: info
+
+    volumes:
+      # Persist face DB across container restarts
+      - face_db_data:/app/face_db
+      # Models volume — mount your .onnx files here
+      - ./models:/app/models:ro
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  face_db_data:
+  minio_data:

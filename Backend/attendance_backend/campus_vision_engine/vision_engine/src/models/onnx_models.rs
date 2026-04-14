@@ -1,9 +1,6 @@
 use anyhow::{ anyhow, Result };
 use ndarray::Array4;
-use ort::{
-    session::builder::{ GraphOptimizationLevel, SessionBuilder },
-    value::Value,
-};
+use ort::{ session::builder::{ GraphOptimizationLevel, SessionBuilder }, value::Value };
 use std::sync::{ atomic::{ AtomicBool, AtomicU64, AtomicUsize, Ordering }, mpsc, Arc };
 use std::thread::{ self, JoinHandle };
 use std::time::{ Duration, Instant };
@@ -256,16 +253,29 @@ fn start_worker(
             }
         }
 
+        // Load model bytes
+        let model_bytes = match std::fs::read(&model_path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("Worker failed to read model {}: {}", model_path, e);
+                return; // Exit the thread if model can't be loaded
+            }
+        };
+
+        // Build and commit session from memory
         let mut session = SessionBuilder::new()
             .unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .unwrap()
-            .with_intra_threads(1) // keep 1 per worker
+            .with_intra_threads(1)
             .unwrap()
             .with_parallel_execution(false)
             .unwrap()
-            .commit_from_file(&model_path)
-            .unwrap();
+            .commit_from_memory(&model_bytes) // Now correct: & [u8]
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to create ORT session: {}", e);
+                std::process::exit(1); // or just return;
+            });
 
         // mark worker ready AFTER model loaded
         if ready_counter.fetch_add(1, Ordering::SeqCst) + 1 == total_workers {

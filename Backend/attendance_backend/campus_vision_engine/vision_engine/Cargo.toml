@@ -19,8 +19,23 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 
 # ML + Vision
-opencv = "0.96.0"
-ort = "2.0.0-rc.12"
+opencv = { version = "0.96.0", default-features = false, features = [
+    "calib3d",      # estimate_affine_partial_2d
+    "imgcodecs",    # imdecode
+    "imgproc",      # resize, warpAffine, cvtColor, Laplacian
+    "objdetect",    # FaceDetectorYN (YuNet)
+    "highgui",      # not needed in prod — remove if unused
+] }
+
+ort = { 
+    version = "2.0.0-rc.12", 
+    default-features = false, 
+    features = [
+        "download-binaries",
+        "tls-rustls",
+        "copy-dylibs",
+    ]
+}
 
 # Parallelism
 rayon = { workspace = true }
@@ -30,19 +45,27 @@ dashmap = "5"
 # DateTime
 chrono = { workspace = true }
 
-# Internal logic reuse
+# Internal
 intelligence_core = { path = "../intelligence_core" }
 
 # ndarray
 ndarray = { workspace = true }
 
-redis = { version = "1.0.3", features = ["aio", "tokio-rustls-comp"]}
+# Async + networking
+redis = { version = "1.0.3", features = ["aio", "tokio-rustls-comp"] }
 reqwest = { version = "0.12", features = ["json"] }
-
 dotenvy = "0.15"
 
+# Cloud storage
 aws-sdk-s3 = "1"
 aws-config = "1"
+
+# TLS
 rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
+
+# Misc
 num_cpus = "1.17.0"
 log = "0.4.29"
+futures = "0.3.32"
+core_affinity = "0.8"    # needed by InferencePool worker pinning
+lru = "0.12"             # needed by intelligence_core via vision_engine

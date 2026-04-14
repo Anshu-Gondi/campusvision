@@ -1,0 +1,38 @@
+# .cargo/config.toml
+
+# ── Development (your laptop, SSE4.2) ────────────────────────────────────────
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "target-feature=+sse4.1,+sse4.2",  # explicit — no surprises
+]
+
+# ── Production build command ──────────────────────────────────────────────────
+# cargo build --release --config 'build.rustflags=["-C","target-cpu=x86-64-v2","-C","target-feature=+sse4.1,+sse4.2"]'
+
+# ── Linker (Windows) ──────────────────────────────────────────────────────────
+# Speeds up linking significantly on Windows, especially in debug builds.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+# ── Linker (Linux/cloud) ──────────────────────────────────────────────────────
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "target-cpu=x86-64-v2",            # always x86-64-v2 on Linux/cloud
+    "-C", "target-feature=+sse4.1,+sse4.2",
+]
+
+# ── Environment — ORT ─────────────────────────────────────────────────────────
+[env]
+ORT_STRATEGY = "download"                    # dev: download binary
+# Production Dockerfile overrides this to "system"
+
+# ── Profile tweaks ────────────────────────────────────────────────────────────
+# These apply on top of your Cargo.toml [profile.release] settings.
+# Your current settings are already good — lto=thin, codegen-units=1.
+# One addition: split-debuginfo speeds up incremental dev builds.
+[profile.dev]
+split-debuginfo = "unpacked"                 # faster debug builds on Windows
+opt-level = 1                                # faster compile, still runnable
