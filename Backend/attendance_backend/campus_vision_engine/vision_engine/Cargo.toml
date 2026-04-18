@@ -27,15 +27,10 @@ opencv = { version = "0.96.0", default-features = false, features = [
     "highgui",      # not needed in prod — remove if unused
 ] }
 
-ort = { 
-    version = "2.0.0-rc.12", 
-    default-features = false, 
-    features = [
-        "download-binaries",
-        "tls-rustls",
-        "copy-dylibs",
-    ]
-}
+# ML — tract replaces ort entirely
+# tract-onnx: pure Rust ONNX inference, no C++, no AVX requirement
+# It uses SSE2/SSE4.1 automatically when available via runtime detection
+tract-onnx = "0.21"
 
 # Parallelism
 rayon = { workspace = true }

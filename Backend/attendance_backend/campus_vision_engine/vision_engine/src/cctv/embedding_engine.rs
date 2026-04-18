@@ -24,8 +24,9 @@ impl EmbeddingEngine {
         for mat in mats {
             use ndarray::Ix4;
 
-            let arr = mat_to_array(mat, &self.layout)?.into_dimensionality::<Ix4>()?;
-
+            let arr = crate::preprocessing
+                ::mat_to_array_arcface(mat)?
+                .into_dimensionality::<ndarray::Ix4>()?;
             batch.push(arr);
         }
 

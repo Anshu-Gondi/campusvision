@@ -13,7 +13,7 @@ use crate::face_db;
 #[derive(Clone)]
 pub struct MinioFaceDb {
     client: Client,
-    bucket: String,
+    pub bucket: String,
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 

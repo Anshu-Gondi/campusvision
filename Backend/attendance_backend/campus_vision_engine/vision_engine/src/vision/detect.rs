@@ -89,10 +89,10 @@ async fn detect_and_embed_internal(
     }
 
     // 5️⃣ Convert Mat → ndarray
-    let input_layout = layout.unwrap_or_else(|| "NCHW".to_string());
-    let input_array = preprocessing::mat_to_array(&face_mat, &input_layout)?;
+    // ✅ ArcFace-specific preprocessing — correct normalization + NHWC shape
+    let input_array = preprocessing::mat_to_array_arcface(&face_mat)?;
     let input_array4: Array4<f32> = input_array
-        .into_dimensionality()
+        .into_dimensionality::<ndarray::Ix4>()
         .map_err(|_| anyhow!("Expected 4D tensor"))?;
 
     // 🔥 6️⃣ INFERENCE THROUGH POOL (NON-BLOCKING)

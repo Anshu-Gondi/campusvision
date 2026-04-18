@@ -70,7 +70,9 @@ pub async fn verify_face_with_pool(
     ).await?;
 
     // 2️⃣ Convert → tensor
-    let input_tensor = mat_to_array4_dynamic(&face_mat, layout_str)?;
+    let input_tensor = crate::preprocessing::mat_to_array_arcface(&face_mat)?
+        .into_dimensionality::<ndarray::Ix4>()
+        .map_err(|_| anyhow!("tensor shape error"))?;
 
     // 3️⃣ Send to inference pool
     let embedding = state.face_pool.run_face_embedding(input_tensor).await?;

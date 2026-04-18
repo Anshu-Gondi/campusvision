@@ -1,16 +1,9 @@
-/// main.rs  (replaces existing)
-///
-/// Changes:
-///   1. CCTV route paths updated to include school_id.
-///   2. Single AppState constructed once, passed to all routers.
-///   3. setup_opencv_path kept as-is.
-
 use axum::{Router, routing::{get, post}};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use rustls::crypto::{CryptoProvider, aws_lc_rs};
 
-mod scheduler;          // NEW
+mod scheduler;
 mod cctv;
 mod models;
 mod preprocessing;
@@ -40,13 +33,6 @@ fn setup_opencv_path() {
     }
 }
 
-// ── CCTV Router ───────────────────────────────────────────────────────────────
-//
-// Routes updated:
-//   - process-frame:  school_id is now a query param (easier for camera clients)
-//   - tracks:         /:school_id/:role/:camera_id
-//   - clear-camera:   /:school_id/:role/:camera_id
-
 pub fn cctv_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/cctv/process-frame",                          post(process_frame_route))
@@ -54,8 +40,6 @@ pub fn cctv_router() -> Router<Arc<AppState>> {
         .route("/cctv/clear-daily",                            post(clear_daily_route))
         .route("/cctv/clear-camera/:school_id/:role/:camera_id", post(clear_camera_route))
 }
-
-// ── App Entry ─────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,19 +49,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("🔥 PANIC: {:?}", info);
     }));
 
-    dotenvy::dotenv().ok();
-
     CryptoProvider::install_default(aws_lc_rs::default_provider())
         .expect("Failed to install crypto provider");
 
     tracing_subscriber::fmt::init();
 
-    // ── Single AppState — shared by ALL routers ───────────────────────────
-    //
-    // Previously cctv/api.rs had its own GLOBAL_STATE that called
-    // AppState::new() a second time (double Redis, double model pools).
-    // Now there is exactly one AppState in the entire process.
+    // Build AppState once
+    println!("🚀 Initializing AppState (models + connections)...");
     let state = Arc::new(AppState::new().await);
+    println!("✅ AppState initialized successfully");
 
     let app = Router::new()
         .merge(cctv_router())
@@ -85,23 +65,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(|| async { "ok" }))
         .with_state(state.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000)); // 0.0.0.0 for cloud
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
     tracing::info!("🚀 Server running at http://{}", addr);
+    println!("🚀 Server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let server = axum::serve(listener, app.into_make_service());
 
-    let shutdown = async {
-        tokio::signal::ctrl_c().await.expect("ctrl-c failed");
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c().await.expect("failed to listen for ctrl-c");
+        println!("🛑 Shutdown signal received...");
     };
 
     tokio::select! {
-        _ = server => {},
-        _ = shutdown => {
+        _ = axum::serve(listener, app.into_make_service()) => {},
+        _ = shutdown_signal => {
             println!("Shutting down gracefully...");
+            
+            // Clean shutdown of thread pools
+            state.yunet_pool.shutdown();   // if it has this method
             state.face_pool.shutdown();
             state.emotion_pool.shutdown();
+            
+            // Give workers a moment to finish
+            tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
         }
     }
 

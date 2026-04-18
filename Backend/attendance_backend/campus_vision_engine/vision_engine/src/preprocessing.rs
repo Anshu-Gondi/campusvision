@@ -259,7 +259,28 @@ pub fn align_face(
     Ok(rgb)
 }
 
-/// Convert Mat → ndarray (NHWC or NCHW)
+/// Convert Mat → ndarray for ArcFace specifically.
+/// Normalization: (pixel - 127.5) / 128.0  ← required by this model
+/// Input Mat must be RGB (already converted from BGR in align_face).
+pub fn mat_to_array_arcface(mat: &Mat) -> Result<ndarray::ArrayD<f32>> {
+    let rows = mat.rows() as usize;
+    let cols = mat.cols() as usize;
+    let data = mat.data_bytes()?;
+
+    // Output shape: (1, 112, 112, 3) NHWC — matches model input
+    let arr = ndarray::Array::from_shape_fn(
+        (1, rows, cols, 3),
+        |(_, y, x, c)| {
+            let pixel = data[(y * cols + x) * 3 + c] as f32;
+            // ✅ ArcFace normalization — NOT /255.0
+            (pixel - 127.5) / 128.0
+        },
+    );
+
+    Ok(arr.into_dyn())
+}
+
+/// Generic layout converter — kept for emotion model which uses /255.0
 pub fn mat_to_array(mat: &Mat, layout: &str) -> Result<ndarray::ArrayD<f32>> {
     let rows = mat.rows() as usize;
     let cols = mat.cols() as usize;
@@ -267,17 +288,23 @@ pub fn mat_to_array(mat: &Mat, layout: &str) -> Result<ndarray::ArrayD<f32>> {
 
     match layout {
         "NHWC" => {
-            let arr = ndarray::Array::from_shape_fn((1, rows, cols, 3), |(_, y, x, c)| {
-                (data[(y * cols + x) * 3 + c] as f32) / 255.0
-            });
+            let arr = ndarray::Array::from_shape_fn(
+                (1, rows, cols, 3),
+                |(_, y, x, c)| {
+                    (data[(y * cols + x) * 3 + c] as f32) / 255.0
+                },
+            );
             Ok(arr.into_dyn())
         }
         "NCHW" => {
-            let arr = ndarray::Array::from_shape_fn((1, 3, rows, cols), |(_, c, y, x)| {
-                (data[(y * cols + x) * 3 + c] as f32) / 255.0
-            });
+            let arr = ndarray::Array::from_shape_fn(
+                (1, 3, rows, cols),
+                |(_, c, y, x)| {
+                    (data[(y * cols + x) * 3 + c] as f32) / 255.0
+                },
+            );
             Ok(arr.into_dyn())
         }
-        _ => Err(anyhow!("Unsupported layout")),
+        _ => Err(anyhow!("Unsupported layout: {}", layout)),
     }
 }
