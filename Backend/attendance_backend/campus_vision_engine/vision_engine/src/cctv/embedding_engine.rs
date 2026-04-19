@@ -1,38 +1,34 @@
 use crate::app::AppState;
-use crate::preprocessing::mat_to_array;
+use crate::preprocessing::{mat_to_arcface_input, mat_to_emotion_input};
 use ndarray::Array4;
 use std::sync::Arc;
 use opencv::prelude::*;
+use anyhow::Result;
 
 #[derive(Clone)]
 pub struct EmbeddingEngine {
     state: Arc<AppState>,
-    layout: String,
 }
 
 impl EmbeddingEngine {
-    pub fn new(state: Arc<AppState>, layout: Option<String>) -> Self {
-        Self {
-            state,
-            layout: layout.unwrap_or("NHWC".to_string()),
-        }
+    pub fn new(state: Arc<AppState>) -> Self {
+        Self { state }
     }
 
-    pub async fn batch_embed(&self, mats: &[Mat]) -> anyhow::Result<Vec<Arc<Vec<f32>>>> {
+    /// Batch embed faces using ArcFace (correct normalization + NHWC)
+    pub async fn batch_embed(&self, mats: &[Mat]) -> Result<Vec<Arc<Vec<f32>>>> {
         let mut batch: Vec<Array4<f32>> = Vec::with_capacity(mats.len());
 
         for mat in mats {
-            use ndarray::Ix4;
-
-            let arr = crate::preprocessing
-                ::mat_to_array_arcface(mat)?
-                .into_dimensionality::<ndarray::Ix4>()?;
-            batch.push(arr);
+            // Use the new correct ArcFace preprocessing
+            let tensor = mat_to_arcface_input(mat)?;
+            batch.push(tensor);
         }
 
-        // 🔥 REAL batch inference
+        // Real batch inference through the pool
         let embeddings = self.state.face_pool.infer_batch(batch).await?;
 
+        // Wrap each embedding in Arc for efficient sharing
         Ok(
             embeddings
                 .into_iter()
@@ -41,29 +37,48 @@ impl EmbeddingEngine {
         )
     }
 
-    pub async fn batch_emotion(&self, mats: &[Mat]) -> anyhow::Result<Vec<Option<i64>>> {
-        let mut batch = Vec::with_capacity(mats.len());
+    /// Batch emotion detection using Emotion FERPlus
+    pub async fn batch_emotion(&self, mats: &[Mat]) -> Result<Vec<Option<i64>>> {
+        let mut batch: Vec<Array4<f32>> = Vec::with_capacity(mats.len());
 
         for mat in mats {
-            use ndarray::Ix4;
-
-            let arr = mat_to_array(mat, &self.layout)?.into_dimensionality::<Ix4>()?;
-
-            batch.push(arr);
+            // Use the new correct Emotion preprocessing (grayscale NCHW)
+            let tensor = mat_to_emotion_input(mat)?;
+            batch.push(tensor);
         }
 
+        // Run batch inference
         let emotions = self.state.emotion_pool.infer_batch(batch).await?;
 
+        // Convert raw output to emotion class index (0-7)
         Ok(
             emotions
                 .into_iter()
-                .map(|v|
-                    v
-                        .get(0)
-                        .copied()
-                        .map(|x| x as i64)
-                )
+                .map(|scores| {
+                    if scores.is_empty() {
+                        None
+                    } else {
+                        // Find index with highest score (argmax)
+                        scores
+                            .iter()
+                            .enumerate()
+                            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                            .map(|(idx, _)| idx as i64)
+                    }
+                })
                 .collect()
         )
+    }
+
+    /// Single face embedding (convenience method)
+    pub async fn embed_single(&self, mat: &Mat) -> Result<Vec<f32>> {
+        let tensor = mat_to_arcface_input(mat)?;
+        self.state.face_pool.run_face_embedding(tensor).await
+    }
+
+    /// Single emotion detection (convenience method)
+    pub async fn emotion_single(&self, mat: &Mat) -> Result<i64> {
+        let tensor = mat_to_emotion_input(mat)?;
+        self.state.emotion_pool.run_emotion(tensor).await
     }
 }

@@ -15,75 +15,52 @@ pub const DEFAULT_YUNET_MODEL_PATH: &str = "models/face_detection_yunet_2023mar.
 /// Preprocess image bytes → returns (aligned_face_mat, bbox, landmarks)
 pub async fn preprocess_image_dynamic(
     image_bytes: &[u8],
-    model_input_size: Option<(usize, usize)>,
-    yunet_pool: Arc<YuNetPool>
-) -> Result<(Mat, Rect, Vec<Point2f>, Mat)> {
-    // 1️⃣ Decode image
-    let mut mat = imgcodecs::imdecode(&Vector::from_slice(image_bytes), imgcodecs::IMREAD_COLOR)?;
+    yunet_pool: Arc<YuNetPool>,
+) -> Result<(Mat, Rect, Vec<Point2f>, Mat)> {   // (aligned_rgb, bbox, landmarks, original_face_roi)
 
+    // 1. Decode
+    let mut mat = imgcodecs::imdecode(&opencv::core::Vector::from_slice(image_bytes), imgcodecs::IMREAD_COLOR)?;
     if mat.empty() {
-        return Err(anyhow!("Decoded image is empty"));
+        return Err(anyhow!("Failed to decode image"));
     }
 
-    // Reject ultra small images (garbage input)
+    // 2. Quick rejection
     if mat.cols() < 100 || mat.rows() < 100 {
         return Err(anyhow!("image_too_small"));
     }
 
-    // Reject extreme aspect ratio (non-camera input)
-    let aspect = (mat.cols() as f32) / (mat.rows() as f32);
+    let aspect = mat.cols() as f32 / mat.rows() as f32;
     if aspect < 0.3 || aspect > 3.0 {
-        return Err(anyhow!("invalid_image_aspect"));
+        return Err(anyhow!("invalid_aspect_ratio"));
     }
 
-    // 2️⃣ Only downscale EXTREME images (4K+)
-    let (w, h) = (mat.cols(), mat.rows());
-
-    if w > 1280 || h > 1280 {
-        let scale = 1280.0 / (w.max(h) as f64);
-
-        let new_size = Size::new(((w as f64) * scale) as i32, ((h as f64) * scale) as i32);
+    // 3. Downscale very large images
+    if mat.cols() > 1280 || mat.rows() > 1280 {
+        let scale = 1280.0 / (mat.cols().max(mat.rows()) as f64);
+        let new_w = (mat.cols() as f64 * scale) as i32;
+        let new_h = (mat.rows() as f64 * scale) as i32;
 
         let mut resized = Mat::default();
-        imgproc::resize(&mat, &mut resized, new_size, 0.0, 0.0, imgproc::INTER_AREA)?;
+        imgproc::resize(&mat, &mut resized, Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_AREA)?;
         mat = resized;
     }
 
-    // 3️⃣ Detect faces via pool
+    // 4. Face detection
     let faces = yunet_pool.detect(&mat).await?;
+    let (face_rect, landmarks) = pick_best_face(&faces)?
+        .ok_or_else(|| anyhow!("No face detected"))?;
 
-    let (face_rect, landmarks) = pick_best_face(&faces)?.ok_or_else(||
-        anyhow!("No face detected")
-    )?;
+    // Hard filters
+    if face_rect.width < 80 || face_rect.height < 80 {
+        return Err(anyhow!("face_too_small"));
+    }
 
     let face_roi = Mat::roi(&mat, face_rect)?.try_clone()?;
 
-    // HARD FILTERS (cheap rejection before alignment)
+    // 5. Align face (returns RGB Mat)
+    let aligned_rgb = align_face(&mat, face_rect, &landmarks, Some((112, 112)))?;
 
-    if face_rect.width < 80 || face_rect.height < 80 {
-        return Err(anyhow!("face_too_small_hard"));
-    }
-
-    // aspect ratio check (reject extreme angles)
-    let aspect = (face_rect.width as f32) / (face_rect.height as f32);
-    if aspect < 0.5 || aspect > 1.8 {
-        return Err(anyhow!("bad_face_ratio"));
-    }
-
-    // bounding box inside image sanity
-    if face_rect.x < 0 || face_rect.y < 0 {
-        return Err(anyhow!("invalid_bbox"));
-    }
-
-    // 4️⃣ Align face
-    let aligned = align_face(
-        &mat,
-        face_rect,
-        &landmarks,
-        model_input_size.map(|(h, w)| (w as i32, h as i32))
-    )?;
-
-    Ok((aligned, face_rect, landmarks, face_roi))
+    Ok((aligned_rgb, face_rect, landmarks, face_roi))
 }
 
 /// Select highest score face
@@ -261,50 +238,46 @@ pub fn align_face(
 
 /// Convert Mat → ndarray for ArcFace specifically.
 /// Normalization: (pixel - 127.5) / 128.0  ← required by this model
-/// Input Mat must be RGB (already converted from BGR in align_face).
-pub fn mat_to_array_arcface(mat: &Mat) -> Result<ndarray::ArrayD<f32>> {
-    let rows = mat.rows() as usize;
-    let cols = mat.cols() as usize;
+/// Convert aligned RGB Mat → Array4 for **ArcFace**
+pub fn mat_to_arcface_input(mat: &Mat) -> Result<Array4<f32>> {
+    if mat.cols() != 112 || mat.rows() != 112 {
+        return Err(anyhow!("Aligned face must be 112x112"));
+    }
+
     let data = mat.data_bytes()?;
+    let mut array = Array4::<f32>::zeros((1, 112, 112, 3));
 
-    // Output shape: (1, 112, 112, 3) NHWC — matches model input
-    let arr = ndarray::Array::from_shape_fn(
-        (1, rows, cols, 3),
-        |(_, y, x, c)| {
-            let pixel = data[(y * cols + x) * 3 + c] as f32;
-            // ✅ ArcFace normalization — NOT /255.0
-            (pixel - 127.5) / 128.0
-        },
-    );
+    for y in 0..112 {
+        for x in 0..112 {
+            let idx = (y * 112 + x) * 3;
+            array[[0, y, x, 0]] = (data[idx]     as f32 - 127.5) / 128.0; // R
+            array[[0, y, x, 1]] = (data[idx + 1] as f32 - 127.5) / 128.0; // G
+            array[[0, y, x, 2]] = (data[idx + 2] as f32 - 127.5) / 128.0; // B
+        }
+    }
 
-    Ok(arr.into_dyn())
+    Ok(array)
 }
 
-/// Generic layout converter — kept for emotion model which uses /255.0
-pub fn mat_to_array(mat: &Mat, layout: &str) -> Result<ndarray::ArrayD<f32>> {
-    let rows = mat.rows() as usize;
-    let cols = mat.cols() as usize;
-    let data = mat.data_bytes()?;
+/// Convert original face ROI → Array4 for **Emotion FERPlus** (grayscale 64x64)
+pub fn mat_to_emotion_input(face_roi: &Mat) -> Result<Array4<f32>> {
+    let mut gray = Mat::default();
+    imgproc::cvt_color(face_roi, &mut gray, imgproc::COLOR_BGR2GRAY)?;
 
-    match layout {
-        "NHWC" => {
-            let arr = ndarray::Array::from_shape_fn(
-                (1, rows, cols, 3),
-                |(_, y, x, c)| {
-                    (data[(y * cols + x) * 3 + c] as f32) / 255.0
-                },
-            );
-            Ok(arr.into_dyn())
-        }
-        "NCHW" => {
-            let arr = ndarray::Array::from_shape_fn(
-                (1, 3, rows, cols),
-                |(_, c, y, x)| {
-                    (data[(y * cols + x) * 3 + c] as f32) / 255.0
-                },
-            );
-            Ok(arr.into_dyn())
-        }
-        _ => Err(anyhow!("Unsupported layout: {}", layout)),
+    let mut resized = Mat::default();
+    imgproc::resize(&gray, &mut resized, Size::new(64, 64), 0.0, 0.0, imgproc::INTER_AREA)?;
+
+    let mut float_mat = Mat::default();
+    resized.convert_to(&mut float_mat, opencv::core::CV_32F, 1.0/255.0, 0.0)?;
+
+    let data = float_mat.data_typed::<f32>()?;
+    let mut array = Array4::<f32>::zeros((1, 1, 64, 64));
+
+    for (i, &val) in data.iter().enumerate() {
+        let y = i / 64;
+        let x = i % 64;
+        array[[0, 0, y, x]] = val;
     }
+
+    Ok(array)
 }
