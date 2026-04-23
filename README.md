@@ -22,7 +22,7 @@
 
 ## What is CampusVision?
 
-CampusVision is a production-grade attendance management platform that replaces manual roll-calls with real-time face recognition. Whether through live CCTV feeds, QR codes, or manual image uploads — attendance is marked automatically, accurately, and instantly.
+CampusVision is a production-grade attendance management platform that replaces manual roll-calls with real-time face recognition. Whether through live CCTV feeds, continuously rotating QR codes, or manual image uploads — attendance is marked automatically, accurately, and with multiple fraud verification layers.
 
 Designed for schools, colleges, and corporate campuses, it ships with three integrated interfaces: an **admin web dashboard**, a **teacher/student mobile app**, and a high-performance **Rust-based vision engine** that runs face detection and recognition at scale.
 
@@ -30,9 +30,9 @@ Designed for schools, colleges, and corporate campuses, it ships with three inte
 
 ## Key Features
 
-- 🎯 **Automatic Face Recognition** — Detects, embeds, and identifies faces from live cameras or uploaded images using ONNX models (YuNet, ArcFace, FaceNet)
-- 📡 **Live CCTV Mode** — Real-time CCTV stream processing with multi-face tracking across camera feeds
-- 📱 **QR Code Attendance** — Session-based QR scanning for teacher-managed check-ins
+- 🎯 **Three-Layer Fraud Verification** — Face recognition → emotion liveness check (Emotion-8-FerPlus) → CCTV cross-verification. All three must pass before attendance is marked.
+- 📡 **Live CCTV Mode** — Real-time CCTV stream processing with multi-face tracking across camera feeds; also serves as the final physical presence check in the verification pipeline
+- 📱 **Rolling QR Code Attendance** — Continuously rotating short-lived QR codes (30–40 seconds per code) for teacher-managed sessions. Expired codes are immediately invalidated server-side — screenshot sharing and delayed proxy scans are structurally impossible
 - 🏫 **Multi-Organization & Multi-Branch** — Full tenant isolation; manage multiple campuses from a single instance
 - 📊 **Analytics Dashboard** — Attendance trends, class-wise reports, and exportable data
 - 🔐 **Role-Based Access Control** — Admins, teachers, and students each see only what they need
@@ -40,6 +40,63 @@ Designed for schools, colleges, and corporate campuses, it ships with three inte
 - 🌍 **Geo-Fenced Check-ins** — Location validation to prevent proxy attendance
 - 🔒 **Biometric Security** — Encrypted face embeddings stored in MinIO object storage with backup support
 - 📦 **Docker Ready** — Full containerized deployment with `docker-compose`
+
+---
+
+## Attendance Verification Pipeline
+
+CampusVision uses a three-stage pipeline before any attendance record is written. Every stage must pass — failure at any point is logged for manual review and attendance is not marked.
+
+```
+Student present in classroom
+         │
+         ▼
+┌─────────────────────────┐
+│  Stage 1: Face Recognition  │
+│  YuNet detection            │
+│  ArcFace embeddings         │
+│  Rust HNSW index lookup     │
+└────────────┬────────────┘
+             │ Identity confirmed
+             ▼
+┌─────────────────────────────────┐
+│  Stage 2: Liveness Check        │
+│  Emotion-8-FerPlus model runs   │
+│  Static photo/screen = flat     │
+│  affect → rejected              │
+│  Real person = natural affect   │
+│  variation → passes             │
+└────────────┬────────────────────┘
+             │ Liveness confirmed
+             ▼
+┌──────────────────────────────────────┐
+│  Stage 3: CCTV Cross-Verification    │
+│  Recognized identity cross-checked   │
+│  against CCTV feed                   │
+│  Confirms physical presence in room  │
+│  Catches remote/proxy attempts that  │
+│  passed stages 1 and 2               │
+└────────────┬─────────────────────────┘
+             │ Presence confirmed
+             ▼
+      ✅ Attendance marked
+```
+
+**Why three stages?** Face recognition alone is one lock. A printed photo defeats it. The emotion model catches spoofed media — a static image or screen replay produces flat, unchanging affect that the model flags. CCTV verification catches the remaining attack: someone physically present in a different location who passed the first two stages remotely. Schools already have CCTV infrastructure — this adds verification without adding hardware cost.
+
+---
+
+## Rolling QR Code — How It Works
+
+The QR attendance mode is built around the assumption that students will attempt to share codes. Static or long-lived QR codes are trivially defeated by a screenshot. CampusVision solves this with server-driven rotation:
+
+1. **Teacher opens a session** — the backend generates the first QR token, scoped to the session ID, class context, and a server timestamp.
+2. **Code rotates every 30–40 seconds** — the teacher's screen (web or mobile) automatically fetches and displays the current live token. The previous token is immediately invalidated server-side the moment the new one is issued.
+3. **Student scans the active code** — the mobile app submits the scanned token to the backend. The server checks: is this the current valid token for this session? If it has expired or does not match, it is rejected outright — no grace period.
+4. **One scan per student per session** — duplicate submissions are blocked at the backend regardless of token validity.
+5. **Session closes** — the teacher ends the session; all remaining tokens are invalidated and the attendance record is locked.
+
+A screenshot shared to an absent student is useless within 40 seconds. There is no window to exploit.
 
 ---
 
@@ -67,17 +124,18 @@ Designed for schools, colleges, and corporate campuses, it ships with three inte
 
 ## Tech Stack
 
-| Layer                     | Technology                                     | Purpose                                  |
-| ------------------------- | ---------------------------------------------- | ---------------------------------------- |
-| **Backend API**     | Python 3.10+, Django, DRF                      | REST API, business logic, ORM            |
-| **Vision Engine**   | Rust (`vision_engine` crate)                 | Real-time face detection & recognition   |
-| **Face Models**     | ONNX — YuNet, ArcFace, FaceNet                | Detection & embedding generation         |
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| **Backend API** | Python 3.10+, Django, DRF | REST API, business logic, ORM |
+| **Vision Engine** | Rust (`vision_engine` crate) | Real-time face detection & recognition |
+| **Face Models** | ONNX — YuNet, ArcFace, FaceNet | Detection & embedding generation |
+| **Liveness Model** | ONNX — Emotion-8-FerPlus | Liveness detection via affect analysis |
 | **Embedding Store** | Custom Rust HNSW index (`intelligence_core`) | Fast approximate nearest-neighbor search |
-| **Object Storage**  | MinIO                                          | Encrypted face image & embedding storage |
-| **Web Frontend**    | React 18, Vite, CSS Modules                    | Admin dashboard                          |
-| **Mobile App**      | React Native, Expo, TypeScript                 | Teacher & student interface              |
-| **Database**        | SQLite (dev) / PostgreSQL (prod)               | Relational data                          |
-| **Deployment**      | Docker, docker-compose                         | Containerized production setup           |
+| **Object Storage** | MinIO | Encrypted face image & embedding storage |
+| **Web Frontend** | React 18, Vite, CSS Modules | Admin dashboard |
+| **Mobile App** | React Native, Expo, TypeScript | Teacher & student interface |
+| **Database** | SQLite (dev) / PostgreSQL (prod) | Relational data |
+| **Deployment** | Docker, docker-compose | Containerized production setup |
 
 ---
 
@@ -178,6 +236,7 @@ cargo run --release
 - `face_detection_yunet_2023mar.onnx`
 - `arcface.onnx`
 - `facenet.onnx`
+- `emotion-ferplus-8.onnx`
 
 ---
 
@@ -236,7 +295,7 @@ This brings up Django, the Rust vision engine, MinIO, and any configured databas
 Handles everything related to recording, querying, and managing attendance records.
 
 - **Models:** `Student`, `Teacher`, `Attendance`, `QRSession`, `Camera`, `Branch`, `Organization`, `SchoolClass`, `Timetable`, `FaceImage`, `FaceRejectionLog`
-- **Key APIs:** Mark attendance, generate QR sessions, fetch reports, manage cameras
+- **Key APIs:** Mark attendance, generate and rotate QR sessions (30–40s token window), fetch reports, manage cameras
 - **Utils:** Geo-fencing (`geo.py`), MinIO integration (`minio.py`), face database backup (`face_db_backup.py`), crypto helpers
 
 ### `Admin/` — Organization & Admin Workflows
@@ -248,26 +307,26 @@ Handles everything related to recording, querying, and managing attendance recor
 
 ### `campus_vision_engine/` — Rust Vision Workspace
 
-| Crate                 | Role                                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------- |
-| `vision_engine`     | HTTP API server, CCTV pipeline, camera tracking, face detection & recognition           |
+| Crate | Role |
+|-------|------|
+| `vision_engine` | HTTP API server, CCTV pipeline, camera tracking, face detection, recognition, and liveness verification |
 | `intelligence_core` | HNSW-based vector index with SIMD-accelerated cosine similarity; multi-school isolation |
-| `intelligence_py`   | PyO3 bindings exposing scheduling primitives to Python                                  |
+| `intelligence_py` | PyO3 bindings exposing scheduling primitives to Python |
 
-The vision engine is built for **concurrency and throughput** — parallel camera streams, connection pooling, async I/O, and SIMD math. It communicates back to Django to record attendance events.
+The vision engine is built for **concurrency and throughput** — parallel camera streams, connection pooling, async I/O, and SIMD math. It communicates back to Django to record verified attendance events.
 
 ### Frontend Pages
 
-| Page                             | Description                       |
-| -------------------------------- | --------------------------------- |
-| `Admin/Dashboard`              | Overview metrics, quick actions   |
-| `Admin/Organizations`          | Create & manage orgs and branches |
-| `Admin/Timetable`              | Visual timetable editor           |
-| `Admin/Scheduler`              | Class scheduling interface        |
-| `Attendance/AttendanceScanner` | QR-based check-in                 |
-| `Attendance/AttendanceCamera`  | Live camera attendance            |
-| `Analytics`                    | Attendance trends & reports       |
-| `Students` / `Teachers`      | User management & profiles        |
+| Page | Description |
+|------|-------------|
+| `Admin/Dashboard` | Overview metrics, quick actions |
+| `Admin/Organizations` | Create & manage orgs and branches |
+| `Admin/Timetable` | Visual timetable editor |
+| `Admin/Scheduler` | Class scheduling interface |
+| `Attendance/AttendanceScanner` | Rolling QR-based check-in (30–40s rotation) |
+| `Attendance/AttendanceCamera` | Live camera attendance with three-layer verification |
+| `Analytics` | Attendance trends & reports |
+| `Students` / `Teachers` | User management & profiles |
 
 ---
 
@@ -278,8 +337,10 @@ CampusVision handles biometric data — face images and embeddings. This comes w
 - **Encryption at rest** — face embeddings stored encrypted in MinIO
 - **HTTPS only** — never serve over plain HTTP in production
 - **Access Control** — strict role separation (Admin → Teacher → Student)
+- **Rolling QR expiry** — server-side token invalidation every 30–40 seconds, no grace period; expired tokens are rejected outright
 - **Geo-fencing** — prevents remote/proxy attendance marking
-- **Audit trails** — `FaceRejectionLog` tracks failed recognition events
+- **Three-layer verification** — face recognition, emotion liveness, and CCTV cross-check before any record is written
+- **Audit trails** — `FaceRejectionLog` tracks all failed recognition and verification events
 - **Data minimization** — only embeddings (not raw images) used for recognition after enrollment
 
 > Always obtain proper user consent before enrolling biometric data.
@@ -290,12 +351,12 @@ CampusVision handles biometric data — face images and embeddings. This comes w
 
 Each service has its own `.env` / `.env.example`. Key variables to configure:
 
-| Service        | Key Variables                                                                 |
-| -------------- | ----------------------------------------------------------------------------- |
+| Service | Key Variables |
+|---------|--------------|
 | Django Backend | `SECRET_KEY`, `DEBUG`, `DATABASE_URL`, `MINIO_*`, `RUST_ENGINE_URL` |
-| Vision Engine  | `REDIS_URL`, `MINIO_*`, `DJANGO_CALLBACK_URL`, `MODEL_PATH`           |
-| Frontend       | `VITE_API_BASE_URL`                                                         |
-| Mobile         | `EXPO_PUBLIC_API_URL`                                                       |
+| Vision Engine | `REDIS_URL`, `MINIO_*`, `DJANGO_CALLBACK_URL`, `MODEL_PATH` |
+| Frontend | `VITE_API_BASE_URL` |
+| Mobile | `EXPO_PUBLIC_API_URL` |
 
 ---
 
@@ -325,7 +386,6 @@ python manage.py test
 
 ## Roadmap
 
-- [ ] Liveness detection (anti-spoofing)
 - [ ] Push notifications for attendance alerts (mobile)
 - [ ] CSV/Excel export for attendance reports
 - [ ] SSO / OAuth2 integration
